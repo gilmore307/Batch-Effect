@@ -7,8 +7,8 @@ library(vegan)
 library(ggfortify)
 
 # ==== Read UID argument ====
-#args <- commandArgs(trailingOnly = TRUE)
-args <- c("output/example")
+# args <- commandArgs(trailingOnly = TRUE)
+args <- c("output/example")  # for testing; comment out in production
 if (length(args) < 1) stop("Usage: Rscript pcoa.R <output_folder>")
 output_folder <- args[1]
 
@@ -31,9 +31,19 @@ pcoa_with_metadata_plot <- function(df, method_name, metadata, group_col = "batc
   df_num <- df_merged %>%
     select(where(is.numeric)) %>%
     select(-any_of(group_col))
-  df_num <- df_num[, apply(df_num, 2, function(x) sd(x) > 0), drop = FALSE]
+  
+  # Remove NA-only and constant columns
+  df_num <- df_num[, colSums(!is.na(df_num)) > 0, drop = FALSE]
+  df_num <- df_num[, apply(df_num, 2, function(x) sd(x, na.rm = TRUE)) > 0, drop = FALSE]
+  
+  # Remove rows with NA values
+  complete_rows <- complete.cases(df_num)
+  df_num <- df_num[complete_rows, , drop = FALSE]
+  df_merged <- df_merged[complete_rows, , drop = FALSE]
+  
   rownames(df_num) <- df_merged$sample_id
   
+  # Compute Bray-Curtis distance and run PCoA
   dist_mat <- vegdist(df_num, method = "bray")
   pcoa_res <- cmdscale(dist_mat, k = 2, eig = TRUE)
   points_df <- as.data.frame(pcoa_res$points)
@@ -69,4 +79,3 @@ pcoa_plots <- lapply(names(file_list), function(name) {
 combined_pcoa <- wrap_plots(pcoa_plots, ncol = 2)
 ggsave(file.path(output_folder, "pcoa.tif"), combined_pcoa, width = 12, height = 10, dpi = 300)
 ggsave(file.path(output_folder, "pcoa.png"), combined_pcoa, width = 12, height = 10, dpi = 300)
-

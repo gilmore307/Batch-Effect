@@ -2,7 +2,7 @@
 # Handle Arguments
 # ---------------------------
 #args <- commandArgs(trailingOnly = TRUE)
-args <- c("ALRA,PLSDA,ComBat,FSQN", "output/example")
+args <- c("FSQN", "output/example")
 
 if (length(args) < 2) {
   stop("Usage: Rscript normalize_all_methods.R <method_list> <output_folder>")
@@ -113,7 +113,8 @@ if ("ComBat" %in% method_list) {
 
 if ("FSQN" %in% method_list) {
   cat("Running FSQN...\n")
-  reference_batch <- names(which.max(table(batchid)))
+  
+  reference_batch <- 0  # explicitly use batchid == 0
   ref_matrix <- taxa_mat[batchid == reference_batch, , drop = FALSE]
   reference_distribution <- apply(ref_matrix, 2, function(x) sort(x))
   reference_target <- apply(reference_distribution, 1, median)
@@ -137,3 +138,4 @@ if ("FSQN" %in% method_list) {
   normalized_matrix <- normalized_matrix[rownames(taxa_mat), ]
   write.csv(normalized_matrix, file.path(output_folder, "normalized_fsqn.csv"), row.names = FALSE)
 }
+
