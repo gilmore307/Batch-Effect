@@ -5,20 +5,24 @@ library(readr)
 library(dplyr)
 library(nnet)  # for multinom
 
+# ==== Handle Argument ====
+#args <- commandArgs(trailingOnly = TRUE)
+args <- c("output/example")
+if (length(args) < 1) stop("Usage: Rscript auc_heatmap.R <output_folder>")
+output_folder <- args[1]
+
 # ==== Read Metadata ====
-metadata <- read_csv("metadata.csv")
+metadata_path <- file.path(output_folder, "metadata.csv")
+metadata <- read_csv(metadata_path)
 metadata$sample_id <- as.character(metadata$sample_id)
 metadata$batchid <- as.factor(metadata$batchid)
 
-# ==== File Paths ====
-file_list <- list(
-  Raw = "raw.csv",
-  ALRA = "normalized_alra.csv",
-  ComBat = "normalized_combat.csv",
-  ConQuR = "normalized_conqur.csv",
-  FSQN = "normalized_fsqn.csv",
-  PLSDA = "normalized_plsda.csv"
-)
+# ==== Find All Normalized Files ====
+file_paths <- list.files(output_folder, pattern = "^normalized_.*\\.csv$", full.names = TRUE)
+file_list <- setNames(file_paths, gsub("^normalized_|\\.csv$", "", basename(file_paths)))
+
+# Add Raw file explicitly
+file_list <- c(Raw = file.path(output_folder, "raw.csv"), file_list)
 
 # ==== Function to Compute AUC per Batch ====
 compute_auc_matrix <- function(file_list, metadata, group_col = "batchid") {
@@ -32,11 +36,9 @@ compute_auc_matrix <- function(file_list, metadata, group_col = "batchid") {
     df$sample_id <- metadata$sample_id
     df_merged <- inner_join(df, metadata, by = "sample_id")
     
-    # Get numeric features and batch
     X <- df_merged %>% select(where(is.numeric)) %>% select_if(~ sd(.) > 0)
     y <- df_merged[[group_col]]
     
-    # One-vs-rest AUC per batch
     for (b in batch_levels) {
       y_bin <- as.numeric(y == b)
       model <- try(glm(y_bin ~ ., data = cbind(y_bin, X), family = "binomial"), silent = TRUE)
@@ -55,7 +57,8 @@ compute_auc_matrix <- function(file_list, metadata, group_col = "batchid") {
 # ==== Compute AUC Matrix ====
 auc_mat <- compute_auc_matrix(file_list, metadata, group_col = "batchid")
 
-# ==== Plot Heatmap ====
+# ==== Save Heatmap as TIFF ====
+tiff(file.path(output_folder, "auc_heatmap.tif"), width = 1000, height = 800, res = 150)
 pheatmap(
   auc_mat,
   cluster_rows = FALSE,
@@ -65,5 +68,21 @@ pheatmap(
   fontsize_number = 12,
   fontsize = 14,
   color = colorRampPalette(c("white", "orange", "red"))(100),
-  breaks = seq(0.5, 1, length.out = 101)  # AUC range [0.5, 1]
+  breaks = seq(0.5, 1, length.out = 101)
 )
+dev.off()
+
+# ==== Save Heatmap as PNG ====
+png(file.path(output_folder, "auc_heatmap.png"), width = 1000, height = 800, res = 150)
+pheatmap(
+  auc_mat,
+  cluster_rows = FALSE,
+  cluster_cols = FALSE,
+  display_numbers = TRUE,
+  main = "Population Effect AUC",
+  fontsize_number = 12,
+  fontsize = 14,
+  color = colorRampPalette(c("white", "orange", "red"))(100),
+  breaks = seq(0.5, 1, length.out = 101)
+)
+dev.off()
