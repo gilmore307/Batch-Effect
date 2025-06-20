@@ -3,11 +3,10 @@ library(pROC)
 library(pheatmap)
 library(readr)
 library(dplyr)
-library(nnet)  # for multinom
 
 # ==== Handle Argument ====
-#args <- commandArgs(trailingOnly = TRUE)
-args <- c("output/example")
+# args <- commandArgs(trailingOnly = TRUE)
+args <- c("../output/example")  # <-- set your output folder here
 if (length(args) < 1) stop("Usage: Rscript auc_heatmap.R <output_folder>")
 output_folder <- args[1]
 
@@ -24,31 +23,56 @@ file_list <- setNames(file_paths, gsub("^normalized_|\\.csv$", "", basename(file
 # Add Raw file explicitly
 file_list <- c(Raw = file.path(output_folder, "raw.csv"), file_list)
 
-# ==== Function to Compute AUC per Batch ====
+# ==== Function to Compute AUC Matrix ====
 compute_auc_matrix <- function(file_list, metadata, group_col = "batchid") {
   method_names <- names(file_list)
   batch_levels <- sort(unique(metadata[[group_col]]))
-  auc_matrix <- matrix(NA, nrow = length(method_names), ncol = length(batch_levels),
-                       dimnames = list(method_names, paste0("Batch_", batch_levels)))
+  col_names <- c(paste0("Batch_", batch_levels), "Overall")
+  
+  auc_matrix <- matrix(NA, nrow = length(method_names), ncol = length(col_names),
+                       dimnames = list(method_names, col_names))
   
   for (method in method_names) {
     df <- read_csv(file_list[[method]])
     df$sample_id <- metadata$sample_id
     df_merged <- inner_join(df, metadata, by = "sample_id")
     
-    X <- df_merged %>% select(where(is.numeric)) %>% select_if(~ sd(.) > 0)
-    y <- df_merged[[group_col]]
+    X <- df_merged %>%
+      select(where(is.numeric)) %>%
+      select_if(~ sd(.) > 0)
     
+    y <- as.factor(df_merged[[group_col]])
+    
+    # Batch-wise AUC
     for (b in batch_levels) {
       y_bin <- as.numeric(y == b)
       model <- try(glm(y_bin ~ ., data = cbind(y_bin, X), family = "binomial"), silent = TRUE)
       if (!inherits(model, "try-error")) {
-        pred <- predict(model, newdata = X, type = "response")
-        roc_obj <- roc(y_bin, pred, quiet = TRUE)
-        auc_val <- as.numeric(auc(roc_obj))
-        auc_matrix[method, paste0("Batch_", b)] <- auc_val
+        pred <- try(predict(model, newdata = X, type = "response"), silent = TRUE)
+        if (!inherits(pred, "try-error")) {
+          roc_obj <- try(roc(y_bin, pred, quiet = TRUE), silent = TRUE)
+          if (!inherits(roc_obj, "try-error")) {
+            auc_matrix[method, paste0("Batch_", b)] <- as.numeric(auc(roc_obj))
+          }
+        }
       }
     }
+    
+    # Macro-average AUC across all batches
+    aucs <- sapply(batch_levels, function(b) {
+      y_bin <- as.numeric(y == b)
+      model <- try(glm(y_bin ~ ., data = cbind(y_bin, X), family = "binomial"), silent = TRUE)
+      if (!inherits(model, "try-error")) {
+        pred <- try(predict(model, newdata = X, type = "response"), silent = TRUE)
+        if (!inherits(pred, "try-error")) {
+          roc_obj <- try(roc(y_bin, pred, quiet = TRUE), silent = TRUE)
+          if (!inherits(roc_obj, "try-error")) return(as.numeric(auc(roc_obj)))
+        }
+      }
+      return(NA)
+    })
+    
+    auc_matrix[method, "Overall"] <- mean(aucs, na.rm = TRUE)
   }
   
   return(auc_matrix)
@@ -67,7 +91,7 @@ pheatmap(
   main = "Population Effect AUC",
   fontsize_number = 12,
   fontsize = 14,
-  color = colorRampPalette(c("white", "orange", "red"))(100),
+  color = colorRampPalette(c("blue", "white", "red"))(100),
   breaks = seq(0.5, 1, length.out = 101)
 )
 dev.off()
@@ -82,7 +106,7 @@ pheatmap(
   main = "Population Effect AUC",
   fontsize_number = 12,
   fontsize = 14,
-  color = colorRampPalette(c("white", "orange", "red"))(100),
+  color = colorRampPalette(c("blue", "white", "red"))(100),
   breaks = seq(0.5, 1, length.out = 101)
 )
 dev.off()

@@ -1,0 +1,13 @@
+﻿Title,Purpose,Url,Github,Figures
+Batch normalization followed by merging is powerful for phenotype prediction integrating multiple heterogeneous studies,Intgegration,https://journals.plos.org/ploscompbiol/article?id=10.1371/journal.pcbi.1010608,https://github.com/lynngao/Heterogeneous-Studies,PCA
+Comparison of the effectiveness of different normalization methods for metagenomic cross-study phenotype prediction under heterogeneity,Plots,https://www.nature.com/articles/s41598-024-57670-2,https://github.com/wbb121/Norm-Methods-Comparison,"Bray-Curtis distance, AUC heatmap"
+Batch effects removal for microbiome data via conditional quantile regression,ConQuR,https://www.nature.com/articles/s41467-022-33071-9,https://github.com/wdl2459/ConQuR,PCoA
+mbImpute: an accurate and robust imputation method for microbiome data,ALRA,https://doi.org/10.1186/s13059-021-02400-4,https://github.com/KlugerLab/ALRA,
+Managing batch effects in microbiome data,Comparsion,https://doi.org/10.1093/bib/bbz105,https://github.com/EvaYiwenWang/Managing_batch_effects,
+Batch effects correction for microbiome data with Dirichlet-multinomial regression,BDMMA: Feature selection,https://doi.org/10.1093/bioinformatics/bty729,https://github.com/DAIZHENWEI/BDMMA,
+PLSDA-batch: a multivariate framework to correct for batch effects in microbiome data,PLSDA,https://doi.org/10.1093/bib/bbac622,https://github.com/EvaYiwenWang/PLSDAbatch,"Alignment scores, pRDA, R2 assessment, "
+Increasing prediction performance of colorectal cancer disease status using random forests classification based on metagenomic shotgun sequencing data,ComBat ,https://linkinghub.elsevier.com/retrieve/pii/S2405805X22000059,https://github.com/lynngao/CRC_analysis,
+Consistent and correctable bias in metagenomic sequencing experiments,metacal: Abundance Calibration,https://elifesciences.org/articles/46923,https://github.com/elifesciences-publications/metacal,
+Evaluation of normalization methods for predicting quantitative phenotypes in metagenomic data analysis,Comparision,https://www.frontiersin.org/articles/10.3389/fgene.2024.1369628/full,https://github.com/wbb121/NormMethodsComp--QuantPred,
+Feature specific quantile normalization enables cross-platform classification of molecular subtypes using gene expression data,FSQN: need 2 input dataset,https://academic.oup.com/bioinformatics/article/34/11/1868/4816109,https://github.com/jenniferfranks/FSQN,
+,,,https://github.com/ruochenj/mbImpute,

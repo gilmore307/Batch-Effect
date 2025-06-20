@@ -2,7 +2,7 @@
 # Handle Arguments
 # ---------------------------
 #args <- commandArgs(trailingOnly = TRUE)
-args <- c("FSQN", "output/example")
+args <- c("BMC,ComBat,ConQuR,PLSDA,ALRA", "output/example")
 
 if (length(args) < 2) {
   stop("Usage: Rscript normalize_all_methods.R <method_list> <output_folder>")
@@ -33,6 +33,14 @@ suppressWarnings({
   require(PLSDAbatch)
   require(sva)
   require(FSQN)
+  require(edgeR)
+  require(DESeq2)
+  require(metagenomeSeq)
+  require(GUniFrac)
+  require(preprocessCore)
+  require(pamr)
+  require(limma)
+  require(huge)
 })
 
 # ---------------------------
@@ -64,15 +72,216 @@ if (length(missing) > 0) {
 covar <- metadata[, !(colnames(metadata) %in% c("sample_id", "batchid")), drop = FALSE]
 batchid <- factor(metadata$batchid)
 
+normalize_tss <- function(mat) {
+  mat <- sweep(mat, 1, rowSums(mat), "/")
+  mat[is.na(mat)] <- 0
+  return(mat)
+}
+
 # ---------------------------
 # Normalize Methods
 # ---------------------------
 
-if ("ConQuR" %in% method_list) {
-  cat("Running ConQuR...\n")
-  conqur_result <- ConQuR(tax_tab = taxa_mat, batchid = batchid, covariates = covar, batch_ref = "0")
-  write.csv(conqur_result, file.path(output_folder, "normalized_conqur.csv"), row.names = FALSE)
+# TSS
+if ("TSS" %in% method_list) {
+  cat("Running TSS...\n")
+  norm <- normalize_tss(taxa_mat)
+  write.csv(norm, file.path(output_folder, "normalized_tss.csv"), row.names = FALSE)
 }
+
+# UQ
+if ("UQ" %in% method_list) {
+  cat("Running UQ...\n")
+  uq_norm <- apply(taxa_mat, 1, function(x) x / quantile(x[x > 0], 0.75))
+  write.csv(t(uq_norm), file.path(output_folder, "normalized_uq.csv"), row.names = FALSE)
+}
+
+# MED
+if ("MED" %in% method_list) {
+  cat("Running MED...\n")
+  med_norm <- apply(taxa_mat, 1, function(x) x / median(x[x > 0]))
+  write.csv(t(med_norm), file.path(output_folder, "normalized_med.csv"), row.names = FALSE)
+}
+
+# CSS
+if ("CSS" %in% method_list) {
+  cat("Running CSS...\n")
+  css_obj <- cumNorm(newMRexperiment(t(taxa_mat)))
+  css_norm <- t(MRcounts(css_obj, norm = TRUE))
+  write.csv(css_norm, file.path(output_folder, "normalized_css.csv"), row.names = FALSE)
+}
+
+# TMM
+if ("TMM" %in% method_list) {
+  cat("Running TMM...\n")
+  dge <- DGEList(counts = t(taxa_mat))
+  dge <- calcNormFactors(dge, method = "TMM")
+  tmm_norm <- t(cpm(dge))
+  write.csv(tmm_norm, file.path(output_folder, "normalized_tmm.csv"), row.names = FALSE)
+}
+
+# GMPR
+if ("GMPR" %in% method_list) {
+  cat("Running GMPR...\n")
+  gmpr_factor <- GMPR(taxa_mat)
+  
+  if (any(is.na(gmpr_factor))) {
+    cat("⚠️ Warning: NA values detected in GMPR size factors — replacing with median\n")
+    gmpr_factor[is.na(gmpr_factor)] <- median(gmpr_factor, na.rm = TRUE)
+  }
+  
+  gmpr_norm <- sweep(taxa_mat, 1, gmpr_factor, "/")
+  write.csv(gmpr_norm, file.path(output_folder, "normalized_gmpr.csv"), row.names = FALSE)
+}
+
+
+# CLR
+if ("CLR" %in% method_list) {
+  cat("Running CLR...\n")
+  norm <- normalize_tss(taxa_mat)
+  norm[norm == 0] <- min(norm[norm != 0]) * 0.65
+  clr_norm <- apply(norm, 1, clr)
+  write.csv(t(clr_norm), file.path(output_folder, "normalized_clr.csv"), row.names = FALSE)
+}
+
+# LOG
+if ("LOG" %in% method_list) {
+  cat("Running LOG...\n")
+  norm <- normalize_tss(taxa_mat)
+  norm[norm == 0] <- min(norm[norm != 0]) * 0.65
+  log_norm <- log(norm)
+  write.csv(log_norm, file.path(output_folder, "normalized_log.csv"), row.names = FALSE)
+}
+
+# AST
+if ("AST" %in% method_list) {
+  cat("Running AST...\n")
+  norm <- normalize_tss(taxa_mat)
+  ast_norm <- asin(sqrt(norm))
+  write.csv(ast_norm, file.path(output_folder, "normalized_ast.csv"), row.names = FALSE)
+}
+
+# STD
+if ("STD" %in% method_list) {
+  cat("Running STD...\n")
+  norm <- normalize_tss(taxa_mat)
+  std_norm <- t(apply(norm, 1, function(x) (x - mean(x)) / sd(x)))
+  write.csv(std_norm, file.path(output_folder, "normalized_std.csv"), row.names = FALSE)
+}
+
+# RANK
+if ("Rank" %in% method_list) {
+  cat("Running Rank...\n")
+  norm <- normalize_tss(taxa_mat)
+  rank_norm <- t(apply(norm, 1, rank))
+  write.csv(rank_norm, file.path(output_folder, "normalized_rank.csv"), row.names = FALSE)
+}
+
+# BLOM
+if ("Blom" %in% method_list) {
+  cat("Running Blom...\n")
+  norm <- normalize_tss(taxa_mat)
+  c <- 3/8
+  blom_norm <- t(apply(norm, 1, function(x) qnorm((rank(x) - c)/(length(x) - 2*c + 1))))
+  write.csv(blom_norm, file.path(output_folder, "normalized_blom.csv"), row.names = FALSE)
+}
+
+# NPN
+if ("NPN" %in% method_list) {
+  cat("Running NPN...\n")
+  norm <- normalize_tss(taxa_mat)
+  npn_norm <- t(huge.npn(t(norm), npn.func = "truncation"))
+  write.csv(npn_norm, file.path(output_folder, "normalized_npn.csv"), row.names = FALSE)
+}
+
+# logCPM
+if ("logCPM" %in% method_list) {
+  cat("Running logCPM...\n")
+  taxa_mat[taxa_mat == 0] <- 1
+  logcpm_norm <- t(cpm(t(taxa_mat), log = TRUE))
+  write.csv(logcpm_norm, file.path(output_folder, "normalized_logcpm.csv"), row.names = FALSE)
+}
+
+# VST
+if ("VST" %in% method_list) {
+  cat("Running VST...\n")
+  taxa_mat[taxa_mat == 0] <- 1
+  
+  # Transpose for DESeq2 (samples in columns, features in rows)
+  count_matrix <- round(t(taxa_mat))  # must be integers
+  
+  # Make sure sample names match
+  sample_ids <- colnames(count_matrix)
+  col_data <- data.frame(condition = batchid)
+  rownames(col_data) <- sample_ids
+  
+  # Create DESeq2 object
+  dds <- DESeqDataSetFromMatrix(countData = count_matrix, colData = col_data, design = ~condition)
+  
+  # Apply VST
+  vst_mat <- assay(varianceStabilizingTransformation(dds, blind = TRUE))
+  write.csv(t(vst_mat), file.path(output_folder, "normalized_vst.csv"), row.names = FALSE)
+}
+
+
+# QN
+if ("QN" %in% method_list) {
+  cat("Running QN...\n")
+  norm <- normalize_tss(taxa_mat)
+  norm[norm == 0] <- min(norm[norm != 0]) * 0.65
+  log_mat <- log(norm)
+  ref_quantiles <- normalize.quantiles.determine.target(as.matrix(t(log_mat)))
+  qn_corrected <- normalize.quantiles.use.target(as.matrix(t(log_mat)), target = ref_quantiles)
+  dimnames(qn_corrected) <- dimnames(t(log_mat))
+  write.csv(t(qn_corrected), file.path(output_folder, "normalized_qn.csv"), row.names = FALSE)
+}
+
+# BMC
+if ("BMC" %in% method_list) {
+  cat("Running BMC...\n")
+  norm <- normalize_tss(taxa_mat)
+  norm[norm == 0] <- min(norm[norm != 0]) * 0.65
+  log_mat <- log(norm)
+  batch_factor <- factor(batchid)
+  pam_input <- list(x = as.matrix(t(log_mat)), batchlabels = batch_factor)
+  bmc_corrected <- pamr.batchadjust(pam_input)$x
+  write.csv(t(bmc_corrected), file.path(output_folder, "normalized_bmc.csv"), row.names = FALSE)
+}
+
+# limma
+if ("limma" %in% method_list) {
+  cat("Running limma...\n")
+  norm <- normalize_tss(taxa_mat)
+  norm[norm == 0] <- min(norm[norm != 0]) * 0.65
+  log_mat <- log(norm)
+  batch_factor <- factor(batchid)
+  limma_corrected <- removeBatchEffect(t(log_mat), batch = batch_factor)
+  write.csv(t(limma_corrected), file.path(output_folder, "normalized_limma.csv"), row.names = FALSE)
+}
+
+if ("ConQuR" %in% method_list) {
+  cat("Running ConQuR with parallel backend...\n")
+  
+  # Register parallel backend
+  num_cores <- parallel::detectCores(logical = TRUE) - 1
+  registerDoParallel(cores = num_cores)
+  cat(paste0("Using ", num_cores, " cores\n"))
+  
+  # Run ConQuR
+  conqur_result <- ConQuR(
+    tax_tab = taxa_mat,
+    batchid = batchid,
+    covariates = covar,
+    batch_ref = "0",
+    simple_match = TRUE  # this reduces complexity
+  )
+  
+  write.csv(conqur_result, file.path(output_folder, "normalized_conqur.csv"), row.names = FALSE)
+  
+  # Optional: shut down cluster afterward
+  stopImplicitCluster()
+}
+
 
 if ("ALRA" %in% method_list) {
   cat("Running ALRA...\n")
