@@ -8,7 +8,7 @@ library(grid)
 
 # ==== Handle Argument ====
 # args <- commandArgs(trailingOnly = TRUE)
-args <- c("output/example")  # For testing, replace with commandArgs in production
+args <- c("plots/output/example")  # For testing
 if (length(args) < 1) stop("Usage: Rscript bray-curtis_heatmap.R <output_folder>")
 output_folder <- args[1]
 
@@ -19,20 +19,14 @@ metadata$sample_id <- as.character(metadata$sample_id)
 # ==== Find All Normalized Files ====
 file_paths <- list.files(output_folder, pattern = "^normalized_.*\\.csv$", full.names = TRUE)
 file_list <- setNames(file_paths, gsub("^normalized_|\\.csv$", "", basename(file_paths)))
-
-# Add Raw file explicitly
 file_list <- c(Raw = file.path(output_folder, "raw.csv"), file_list)
 
 # ==== Bray-Curtis Batch-Level Heatmap Generator ====
 generate_batch_heatmap_gtable <- function(file_path, method_name, metadata, group_col = "batchid") {
   df <- read_csv(file_path)
   df$sample_id <- metadata$sample_id
-  df_merged <- inner_join(df, metadata, by = "sample_id")
+  df_merged <- inner_join(df, metadata, by = "sample_id") %>% filter(complete.cases(.))
   
-  # Drop rows with NAs
-  df_merged <- df_merged %>% filter(complete.cases(.))
-  
-  # Extract valid features
   taxa <- df_merged %>%
     select(where(is.numeric)) %>%
     select_if(~ sd(., na.rm = TRUE) > 0) %>%
@@ -54,23 +48,17 @@ generate_batch_heatmap_gtable <- function(file_path, method_name, metadata, grou
   batch_dist_mat <- matrix(NA, length(batch_levels), length(batch_levels),
                            dimnames = list(batch_levels, batch_levels))
   
-  # Compute inter-batch means
   for (i in batch_levels) {
     for (j in batch_levels) {
       samples_i <- sample_ids[batches == i]
       samples_j <- sample_ids[batches == j]
-      
-      if (length(samples_i) == 0 || length(samples_j) == 0) {
-        batch_dist_mat[as.character(i), as.character(j)] <- NA
-      } else {
+      if (length(samples_i) > 0 && length(samples_j) > 0) {
         sub_dists <- dist_df[samples_i, samples_j, drop = FALSE]
         batch_dist_mat[as.character(i), as.character(j)] <- mean(sub_dists, na.rm = TRUE)
       }
     }
   }
   
-  # Handle NA and constant matrix
-  batch_dist_mat[is.na(batch_dist_mat)] <- NA
   if (length(unique(na.omit(c(batch_dist_mat)))) == 1) {
     batch_dist_mat <- batch_dist_mat + matrix(runif(length(batch_dist_mat), -1e-6, 1e-6),
                                               nrow = nrow(batch_dist_mat))
@@ -101,12 +89,22 @@ heatmap_list <- lapply(names(file_list), function(name) {
   generate_batch_heatmap_gtable(file_list[[name]], name, metadata)
 })
 
-# ==== Save Combined Heatmap as TIFF ====
-tiff(file.path(output_folder, "braycurtis.tif"), width = 1600, height = 1200, res = 150)
-grid.arrange(grobs = heatmap_list, ncol = 2)
+# ==== Layout for Square Subplots ====
+ncol_grid <- 3
+nrow_grid <- ceiling(length(heatmap_list) / ncol_grid)
+plot_size <- 800  # pixels per subplot (square)
+
+# ==== Save Combined Heatmaps ====
+tiff(file.path(output_folder, "braycurtis.tiff"),
+     width = plot_size * ncol_grid,
+     height = plot_size * nrow_grid,
+     res = 150)
+grid.arrange(grobs = heatmap_list, ncol = ncol_grid)
 dev.off()
 
-# ==== Save Combined Heatmap as PNG ====
-png(file.path(output_folder, "braycurtis.png"), width = 1600, height = 1200, res = 150)
-grid.arrange(grobs = heatmap_list, ncol = 2)
+png(file.path(output_folder, "braycurtis.png"),
+    width = plot_size * ncol_grid,
+    height = plot_size * nrow_grid,
+    res = 150)
+grid.arrange(grobs = heatmap_list, ncol = ncol_grid)
 dev.off()

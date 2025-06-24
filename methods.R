@@ -2,7 +2,7 @@
 # Handle Arguments
 # ---------------------------
 #args <- commandArgs(trailingOnly = TRUE)
-args <- c("BMC,ComBat,ConQuR,PLSDA,ALRA", "output/example")
+args <- c("GMPR,FSQN", "output/example")
 
 if (length(args) < 2) {
   stop("Usage: Rscript normalize_all_methods.R <method_list> <output_folder>")
@@ -321,17 +321,21 @@ if ("ComBat" %in% method_list) {
 }
 
 if ("FSQN" %in% method_list) {
-  cat("Running FSQN...\n")
+  cat("Running FSQN with NA-resilient output...\n")
   
-  reference_batch <- 0  # explicitly use batchid == 0
+  reference_batch <- 0
   ref_matrix <- taxa_mat[batchid == reference_batch, , drop = FALSE]
-  reference_distribution <- apply(ref_matrix, 2, function(x) sort(x))
-  reference_target <- apply(reference_distribution, 1, median)
+  
+  # Compute sorted reference distribution for each feature
+  reference_distribution <- apply(ref_matrix, 2, function(x) sort(x, na.last = NA))
+  reference_target <- apply(reference_distribution, 1, median, na.rm = TRUE)
   
   normalize_to_reference <- function(mat, target_vector) {
     apply(mat, 2, function(feature_column) {
-      ranked <- rank(feature_column, ties.method = "min")
-      normalized <- target_vector[ranked]
+      ranked <- rank(feature_column, ties.method = "min", na.last = "keep")
+      normalized <- rep(NA, length(ranked))
+      valid <- !is.na(ranked) & ranked <= length(target_vector)
+      normalized[valid] <- target_vector[ranked[valid]]
       return(normalized)
     })
   }
@@ -345,6 +349,14 @@ if ("FSQN" %in% method_list) {
   
   normalized_matrix <- do.call(rbind, normalized_list)
   normalized_matrix <- normalized_matrix[rownames(taxa_mat), ]
-  write.csv(normalized_matrix, file.path(output_folder, "normalized_fsqn.csv"), row.names = FALSE)
+  
+  # Replace any remaining NA values with feature-wise medians
+  na_filled <- apply(normalized_matrix, 2, function(col) {
+    col[is.na(col)] <- median(col, na.rm = TRUE)
+    return(col)
+  })
+  
+  write.csv(na_filled, file.path(output_folder, "normalized_fsqn.csv"), row.names = FALSE)
 }
+
 

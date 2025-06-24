@@ -8,7 +8,7 @@ library(cluster)
 
 # ==== Read UID argument ====
 #args <- commandArgs(trailingOnly = TRUE)
-args <- c("output/example")
+args <- c("plots/output/example")
 if (length(args) < 1) stop("Usage: Rscript pca.R <output_folder>")
 output_folder <- args[1]
 
@@ -55,8 +55,21 @@ plots <- lapply(names(file_list), function(name) {
   pca_with_metadata_plot(df, name, metadata, group_col = "batchid")
 })
 
-# ==== Combine and Save ====
-combined_plot <- wrap_plots(plots, ncol = 2)
-ggsave(file.path(output_folder, "pca.tif"), combined_plot, width = 12, height = 10, dpi = 300)
-ggsave(file.path(output_folder, "pca.png"), combined_plot, width = 12, height = 10, dpi = 300)
+# ==== Combine and Save with Square Subplots ====
+ncol_grid <- 3
+nrow_grid <- ceiling(length(plots) / ncol_grid)
+subplot_size <- 6  # inches per subplot (square)
+
+combined_plot <- wrap_plots(plots, ncol = ncol_grid)
+
+ggsave(file.path(output_folder, "pca.tif"), combined_plot,
+       width = subplot_size * ncol_grid,
+       height = subplot_size * nrow_grid,
+       dpi = 300)
+
+ggsave(file.path(output_folder, "pca.png"), combined_plot,
+       width = subplot_size * ncol_grid,
+       height = subplot_size * nrow_grid,
+       dpi = 300)
+
 

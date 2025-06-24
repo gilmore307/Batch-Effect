@@ -8,7 +8,7 @@ library(ggfortify)
 
 # ==== Read UID argument ====
 # args <- commandArgs(trailingOnly = TRUE)
-args <- c("output/example")  # for testing; comment out in production
+args <- c("plots/output/example")  # for testing; comment out in production
 if (length(args) < 1) stop("Usage: Rscript pcoa.R <output_folder>")
 output_folder <- args[1]
 
@@ -70,12 +70,25 @@ pcoa_with_metadata_plot <- function(df, method_name, metadata, group_col = "batc
 }
 
 # ==== Generate All PCoA Plots ====
-pcoa_plots <- lapply(names(file_list), function(name) {
+plots <- lapply(names(file_list), function(name) {
   df <- read_csv(file_list[[name]])
   pcoa_with_metadata_plot(df, name, metadata, group_col = "batchid")
 })
 
-# ==== Combine and Save ====
-combined_pcoa <- wrap_plots(pcoa_plots, ncol = 2)
-ggsave(file.path(output_folder, "pcoa.tif"), combined_pcoa, width = 12, height = 10, dpi = 300)
-ggsave(file.path(output_folder, "pcoa.png"), combined_pcoa, width = 12, height = 10, dpi = 300)
+# ==== Combine and Save with Square Subplots ====
+ncol_grid <- 3
+nrow_grid <- ceiling(length(plots) / ncol_grid)
+subplot_size <- 6  # inches per subplot (square)
+
+combined_plot <- wrap_plots(plots, ncol = ncol_grid)
+
+ggsave(file.path(output_folder, "pcoa.tif"), combined_plot,
+       width = subplot_size * ncol_grid,
+       height = subplot_size * nrow_grid,
+       dpi = 300)
+
+ggsave(file.path(output_folder, "pcoa.png"), combined_plot,
+       width = subplot_size * ncol_grid,
+       height = subplot_size * nrow_grid,
+       dpi = 300)
+

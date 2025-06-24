@@ -6,7 +6,7 @@ library(dplyr)
 
 # ==== Handle Argument ====
 # args <- commandArgs(trailingOnly = TRUE)
-args <- c("../output/example")  # <-- set your output folder here
+args <- c("plots/output/example")  # <-- set your output folder here
 if (length(args) < 1) stop("Usage: Rscript auc_heatmap.R <output_folder>")
 output_folder <- args[1]
 
