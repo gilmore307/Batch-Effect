@@ -8,7 +8,7 @@ library(cluster)
 
 # ==== Read UID argument ====
 #args <- commandArgs(trailingOnly = TRUE)
-args <- c("plots/output/example")
+args <- c("output/example")
 if (length(args) < 1) stop("Usage: Rscript pca.R <output_folder>")
 output_folder <- args[1]
 

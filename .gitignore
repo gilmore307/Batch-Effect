@@ -1,5 +1,1 @@
-/output
-.Rhistory
-*.tif
-*.png
-*.tiff
+/plots/output

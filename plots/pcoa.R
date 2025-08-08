@@ -8,7 +8,7 @@ library(ggfortify)
 
 # ==== Read UID argument ====
 # args <- commandArgs(trailingOnly = TRUE)
-args <- c("plots/output/example")  # for testing; comment out in production
+args <- c("output/example")  # for testing; comment out in production
 if (length(args) < 1) stop("Usage: Rscript pcoa.R <output_folder>")
 output_folder <- args[1]
 
