@@ -1,14 +1,14 @@
 # ===========================
-# normalize_all_methods.R
+# normalize_all_methods.R  (Form-aware inputs, CLR outputs)
 # ===========================
 
 # ---------------------------
 # Handle Arguments
 # ---------------------------
 # args <- commandArgs(trailingOnly = TRUE)
-args <- c("FSQN", "output/example")
+args <- c("FSQN,QN,BMC,limma,ConQuR,PLSDA,ComBat,MMUPHin,RUV,MetaDICT,SVD,PN,FAbatch,ComBatSeq", "output/example")
 
-if (length(args) < 2) stop("Usage: Rscript normalize_all_methods.R <method_list> <output_folder>")
+if (length(args) < 2) stop("Usage: Rscript normalize_all_methods.R <method_list_csv> <output_folder>")
 
 method_list   <- unlist(strsplit(args[1], ","))
 output_folder <- args[2]
@@ -17,12 +17,11 @@ if (!dir.exists(output_folder)) dir.create(output_folder, recursive = TRUE)
 # ---------------------------
 # Load Libraries
 # ---------------------------
-library(dplyr)
-library(Matrix)
-library(SummarizedExperiment)
-library(S4Vectors)
-
-suppressWarnings({
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(Matrix)
+  library(SummarizedExperiment)
+  library(S4Vectors)
   require(ALRA)
   require(BDMMAcorrect)
   require(PLSDAbatch)
@@ -53,42 +52,18 @@ fail_step  <- function(name, msg){ say("❌ FAIL:  ", name, " — ", msg); stop(
 check_table <- function(x, name = "table", allow_negative = TRUE) {
   if (!is.data.frame(x) && !is.matrix(x)) fail_step(name, "Not a data.frame/matrix.")
   DF <- as.data.frame(x, stringsAsFactors = FALSE)
-  rn <- rownames(DF); cn <- colnames(DF)
-  
+  if (nrow(DF) < 2 || ncol(DF) < 2) fail_step(name, "Too few rows/cols.")
   num_cols <- vapply(DF, is.numeric, TRUE)
   if (any(num_cols)) {
     Mnum <- as.matrix(DF[num_cols])
     bad_fin <- which(!is.finite(Mnum), arr.ind = TRUE)
-    if (nrow(bad_fin) > 0) {
-      cells <- apply(bad_fin, 1, function(rc)
-        sprintf("(%s, %s)", if(!is.null(rn)) rn[rc[1]] else rc[1],
-                if(!is.null(cn)) cn[which(num_cols)][rc[2]] else rc[2]))
-      fail_step(name, paste0("NA/NaN/Inf at ", paste(head(cells,10), collapse=", "),
-                             if(nrow(bad_fin)>10) sprintf(" ... and %d more", nrow(bad_fin)-10) else ""))
-    }
-    if (!allow_negative) {
-      negs <- which(Mnum < 0, arr.ind = TRUE)
-      if (nrow(negs) > 0) {
-        cells <- apply(negs, 1, function(rc)
-          sprintf("(%s, %s)", if(!is.null(rn)) rn[rc[1]] else rc[1],
-                  if(!is.null(cn)) cn[which(num_cols)][rc[2]] else rc[2]))
-        fail_step(name, paste0("Negative values at ", paste(head(cells,10), collapse=", "),
-                               if(nrow(negs)>10) sprintf(" ... and %d more", nrow(negs)-10) else ""))
-      }
-    }
+    if (nrow(bad_fin) > 0) fail_step(name, "NA/NaN/Inf present.")
   }
   if (any(!num_cols)) {
     Mchr <- DF[!num_cols]
     na_idx <- which(is.na(Mchr), arr.ind = TRUE)
-    if (nrow(na_idx) > 0) {
-      cells <- apply(na_idx, 1, function(rc)
-        sprintf("(%s, %s)", if(!is.null(rn)) rn[rc[1]] else rc[1],
-                if(!is.null(cn)) cn[which(!num_cols)][rc[2]] else rc[2]))
-      fail_step(name, paste0("Missing values at ", paste(head(cells,10), collapse=", "),
-                             if(nrow(na_idx)>10) sprintf(" ... and %d more", nrow(na_idx)-10) else ""))
-    }
+    if (nrow(na_idx) > 0) fail_step(name, "Missing values in non-numeric columns.")
   }
-  if (nrow(DF) < 2 || ncol(DF) < 2) fail_step(name, "Too few rows/cols.")
   invisible(TRUE)
 }
 
@@ -99,7 +74,6 @@ write_out <- function(obj, path){
   ok_step(paste0("Write ", nm), t0)
 }
 
-# Simpler run_method: we LOG warnings but DO NOT muffle globally
 run_method <- function(name, expr){
   t0 <- start_step(name)
   out <- withCallingHandlers(
@@ -119,17 +93,197 @@ run_method <- function(name, expr){
 
 post_summary <- function(M, name){
   M <- as.matrix(M)
-  say(sprintf("%s summary: min=%.5f max=%.5f neg=%.2f%% NA=%d",
+  say(sprintf("%s summary: min=%.5f max=%.5f rowmean|avg=%.2e NA=%d",
               name, min(M, na.rm=TRUE), max(M, na.rm=TRUE),
-              100*mean(M<0, na.rm=TRUE), sum(!is.finite(M))))
+              mean(abs(rowMeans(M))), sum(!is.finite(M))))
 }
 
-normalize_tss <- function(mat){
+# ---------------------------
+# Input form detection + converters
+# ---------------------------
+.approx_eq <- function(x, y, tol=1e-6) all(abs(x - y) <= tol, na.rm = TRUE)
+
+is_counts_matrix <- function(M, int_tol = 1e-6) {
+  M <- as.matrix(M)
+  if (!all(is.finite(M))) return(FALSE)
+  if (any(M < 0, na.rm = TRUE)) return(FALSE)
+  v <- M[is.finite(M)]
+  if (!length(v)) return(FALSE)
+  frac <- mean(abs(v - round(v)) <= int_tol)
+  frac >= 0.97
+}
+
+is_proportions_matrix <- function(M, row_tol = 1e-3, frac_rows = 0.9) {
+  M <- as.matrix(M)
+  if (!all(is.finite(M))) return(FALSE)
+  if (any(M < 0, na.rm = TRUE)) return(FALSE)
+  rs <- rowSums(M)
+  mean(abs(rs - 1) <= row_tol, na.rm = TRUE) >= frac_rows
+}
+
+is_clr_matrix <- function(M, tol_mean = 1e-5, min_frac = 0.9, require_signmix = TRUE) {
+  M <- as.matrix(M)
+  if (!all(is.finite(M))) return(FALSE)
+  if (nrow(M) < 2 || ncol(M) < 2) return(FALSE)
+  rm <- rowMeans(M)
+  mean_ok <- mean(abs(rm) <= tol_mean)
+  signmix_ok <- 1
+  if (require_signmix) {
+    pos <- rowSums(M > 0, na.rm = TRUE)
+    neg <- rowSums(M < 0, na.rm = TRUE)
+    signmix_ok <- mean(pos > 0 & neg > 0)
+  }
+  (mean_ok >= min_frac) && (signmix_ok >= min_frac)
+}
+
+is_log_like_matrix <- function(M) {
+  M <- as.matrix(M)
+  if (!all(is.finite(M))) return(FALSE)
+  mix_frac <- mean(rowSums(M > 0) > 0 & rowSums(M < 0) > 0)
+  clrish   <- is_clr_matrix(M)
+  (mix_frac >= 0.8) && !clrish
+}
+
+detect_input_form <- function(M) {
+  if (is_counts_matrix(M))           return("counts")
+  if (is_proportions_matrix(M))      return("proportions")
+  if (is_clr_matrix(M))              return("clr")
+  if (is_log_like_matrix(M))         return("log")
+  if (all(as.matrix(M) >= 0, na.rm = TRUE)) return("positive")
+  "log"
+}
+
+# Positive helpers
+.normalize_tss <- function(mat){
   row_sums <- rowSums(mat)
   row_sums[row_sums == 0] <- 1
   out <- sweep(mat, 1, row_sums, "/")
   out[is.na(out)] <- 0
   out
+}
+
+to_positive <- function(M, from, pseudo_min = 1e-6) {
+  M <- as.matrix(M)
+  if (from == "positive" || from == "proportions") return(M)
+  if (from == "counts")    return(M)
+  if (from == "log" || from == "clr") {
+    P <- exp(M)
+    P[!is.finite(P)] <- 0
+    P[P < 0] <- 0
+    P[P == 0] <- pseudo_min
+    return(P)
+  }
+  stop("Unknown 'from' in to_positive: ", from)
+}
+
+to_counts <- function(M, from, scale = 1e5) {
+  M <- as.matrix(M)
+  if (from == "counts") return(M)
+  if (from %in% c("proportions","positive")) {
+    C <- round(M * scale)
+    return(C)
+  }
+  if (from %in% c("log","clr")) {
+    P <- exp(M); P[P < 0] <- 0
+    C <- round(P * scale)
+    return(C)
+  }
+  stop("Unknown 'from' in to_counts: ", from)
+}
+
+to_log <- function(M, from) {
+  M <- as.matrix(M)
+  if (from == "log") return(M)
+  if (from == "clr") return(M)
+  if (from %in% c("proportions","positive","counts")) {
+    P <- M
+    nz <- P[P > 0]
+    if (!length(nz)) stop("to_log: no positive entries")
+    pc <- max(min(nz) * 0.65, 1e-6)
+    P[P == 0] <- pc
+    return(log(P))
+  }
+  stop("Unknown 'from' in to_log: ", from)
+}
+
+to_clr <- function(M, from) {
+  M <- as.matrix(M)
+  if (from == "clr") return(sweep(M, 1, rowMeans(M), "-"))
+  if (from == "log") return(sweep(M, 1, rowMeans(M), "-"))
+  if (from %in% c("proportions","positive","counts")) {
+    P <- M
+    nz <- P[P > 0]
+    if (!length(nz)) stop("to_clr: no positive entries")
+    pc <- max(min(nz) * 0.65, 1e-6)
+    P[P == 0] <- pc
+    L <- log(P)
+    return(sweep(L, 1, rowMeans(L), "-"))
+  }
+  stop("Unknown 'from' in to_clr: ", from)
+}
+
+# Method → expected input form (native)
+expected_input <- list(
+  QN="positive",
+  BMC="log",
+  limma="log",
+  ConQuR="positive",
+  PLSDA="clr",
+  ComBat="log",
+  FSQN="positive",
+  MMUPHin="positive",      # accepts counts or proportions; we give positive abundances
+  RUV="counts",
+  MetaDICT="positive",
+  SVD="log",
+  PN="positive",
+  FAbatch="log",
+  ComBatSeq="counts"
+)
+
+# Convert native outputs to CLR for writing
+# native_type ∈ {"clr","log","positive","counts"}
+finalize_to_clr <- function(native, native_type, method_name="") {
+  if (native_type == "clr") {
+    out <- sweep(as.matrix(native), 1, rowMeans(native), "-")
+  } else if (native_type == "log") {
+    L <- as.matrix(native); L[!is.finite(L)] <- NA
+    if (any(is.na(L))) {
+      L <- t(apply(L, 1, function(r){ r[is.na(r)] <- mean(r, na.rm = TRUE); r }))
+    }
+    out <- sweep(L, 1, rowMeans(L), "-")
+  } else if (native_type %in% c("positive","counts")) {
+    P <- as.matrix(native)
+    P[!is.finite(P)] <- NA
+    P[P < 0] <- 0
+    if (all(P == 0, na.rm = TRUE)) fail_step(method_name, "All zeros before CLR conversion.")
+    nz <- P[P > 0]
+    if (!length(nz)) fail_step(method_name, "No positive entries before CLR conversion.")
+    pc <- max(min(nz) * 0.65, 1e-6)
+    P[P == 0] <- pc
+    L <- log(P)
+    out <- sweep(L, 1, rowMeans(L), "-")
+  } else {
+    fail_step(method_name, paste0("Unknown native_type: ", native_type))
+  }
+  out
+}
+
+write_clr <- function(method, native, native_type, filename) {
+  clr <- finalize_to_clr(native, native_type, method)
+  post_summary(clr, paste0(method, " (CLR)"))
+  write_out(clr, file.path(output_folder, filename))
+}
+
+# Unified accessor: get input matrix for a method given a base matrix and its form
+get_input_for <- function(method, base_M, base_form) {
+  target <- expected_input[[method]]
+  if (is.null(target)) stop("Unknown method in expected_input: ", method)
+  if (target == base_form) return(base_M)
+  if (target == "positive")   return(to_positive(base_M, base_form))
+  if (target == "log")        return(to_log(base_M, base_form))
+  if (target == "clr")        return(to_clr(base_M, base_form))
+  if (target == "counts")     return(to_counts(base_M, base_form))
+  stop("Unhandled target: ", target)
 }
 
 # ---------------------------
@@ -151,27 +305,29 @@ if (file.exists(custom_matrix_path) && file.exists(custom_metadata_path)) {
 }
 
 # ---------------------------
-# Ensure INPUT is integer counts, and write origin.csv + raw.csv
+# Prepare INPUT — detect form and keep as base
 # ---------------------------
-source("Relative_to_Raw.R")
-taxa_mat <- check_and_convert_counts(
-  uploaded_mat,
-  fixed_library_size   = 10000,
-  force_row_normalize  = TRUE,
-  output_folder        = output_folder,
-  quiet = FALSE
-)
+check_table(uploaded_mat, "uploaded_mat", allow_negative = TRUE)
+input_form <- detect_input_form(uploaded_mat)
+say("ℹ️ Detected input form: ", input_form)
 
 # Attach rownames (expects metadata$sample_id)
-rownames(taxa_mat) <- metadata$sample_id
-rownames(metadata) <- metadata$sample_id
+if (!("sample_id" %in% colnames(metadata)))
+  fail_step("Alignment", "'sample_id' column not found in metadata.")
+if (nrow(uploaded_mat) != nrow(metadata))
+  fail_step("Alignment", "Row count mismatch between matrix and metadata.")
+rownames(uploaded_mat) <- metadata$sample_id
+rownames(metadata)     <- metadata$sample_id
 
-# Keep batchid as factor (0 allowed)
+# Keep this as the base matrix + base form
+base_M     <- as.matrix(uploaded_mat)
+base_form  <- input_form
+
+# Factor batch, covariates
 metadata$batchid <- factor(metadata$batchid, levels = unique(metadata$batchid))
 batchid <- metadata$batchid
 
-# Covariates cleanup
-covar <- metadata[, !(colnames(metadata) %in% c("sample_id", "batchid","phenotype")), drop = FALSE]
+covar <- metadata[, !(colnames(metadata) %in% c("sample_id","batchid","phenotype")), drop = FALSE]
 covar <- as.data.frame(lapply(covar, function(col) {
   if (is.numeric(col))      col[is.na(col)] <- mean(col, na.rm = TRUE)
   else if (is.factor(col))  if (anyNA(col)) col[is.na(col)] <- levels(col)[1]
@@ -179,468 +335,261 @@ covar <- as.data.frame(lapply(covar, function(col) {
   col
 }))
 
-# Reference batch for QN/FSQN
+# Reference batch for methods needing it (QN/FSQN)
 reference_batch <- 0
 ref_idx <- which(batchid == reference_batch)
-ref_matrix <- taxa_mat[ref_idx, , drop = FALSE]
 
 # ---------------------------
-# Global input checks
+# Global checks
 # ---------------------------
 run_method("Input checks", {
-  check_table(taxa_mat, "taxa_mat", allow_negative = FALSE)  # counts enforced
+  check_table(base_M, "base_M (detected input)", allow_negative = TRUE)
   check_table(metadata, "metadata", allow_negative = TRUE)
-  if (!identical(rownames(taxa_mat), rownames(metadata))) {
-    fail_step("Alignment", "rownames(taxa_mat) != rownames(metadata).")
+  if (!identical(rownames(base_M), rownames(metadata))) {
+    fail_step("Alignment", "rownames(base_M) != rownames(metadata).")
   }
   say("Method list: ", paste(method_list, collapse=", "))
-  say("Samples: ", nrow(taxa_mat), " | Features: ", ncol(taxa_mat))
+  say("Samples: ", nrow(base_M), " | Features: ", ncol(base_M))
   say("Reference batch level: ", as.character(reference_batch),
       " | #ref samples: ", length(ref_idx))
 })
 
 # ---------------------------
-# Methods (no _pos.csv, CQR removed)
+# Methods (each uses get_input_for to receive expected input form; outputs saved as CLR)
 # ---------------------------
 
-# QN
+# QN — expects positive
 if ("QN" %in% method_list) {
   run_method("QN", {
     require(preprocessCore)
-    all_abs <- as.matrix(taxa_mat)
-    ref_abs <- as.matrix(ref_matrix)
-    if (nrow(ref_abs) < 2) warn_step("QN", "Reference batch has <2 samples; results may be unstable.")
-    ref_target <- normalize.quantiles.determine.target(ref_abs)
-    qn_corrected <- normalize.quantiles.use.target(all_abs, target = ref_target)
-    dimnames(qn_corrected) <- dimnames(all_abs)
-    post_summary(qn_corrected, "QN")
-    write_out(qn_corrected, file.path(output_folder, "normalized_qn.csv"))
+    X_pos   <- get_input_for("QN", base_M, base_form)
+    ref_pos <- X_pos[ref_idx, , drop=FALSE]
+    if (nrow(ref_pos) < 2) warn_step("QN", "Reference batch has <2 samples; results may be unstable.")
+    target  <- normalize.quantiles.determine.target(ref_pos)
+    qn_pos  <- normalize.quantiles.use.target(X_pos, target = target)
+    dimnames(qn_pos) <- dimnames(X_pos)
+    write_clr("QN", qn_pos, "positive", "normalized_qn.csv")
   })
 }
 
-# BMC
+# BMC — expects log(proportions)
 if ("BMC" %in% method_list) {
   run_method("BMC", {
-    suppressPackageStartupMessages(suppressWarnings(require(pamr)))
-    
-    # TSS first (rows sum to 1)
-    norm <- normalize_tss(taxa_mat)
-    if (all(norm == 0)) fail_step("BMC", "All-zero after TSS.")
-    
-    # tiny pseudo for zeros before log
-    zmin <- min(norm[norm > 0])
-    if (!is.finite(zmin)) fail_step("BMC", "No non-zero entries for log().")
-    norm[norm == 0] <- zmin * 0.65
-    
-    # log-scale for pamr.batchadjust
-    log_mat <- log(norm)
-    pam_input <- list(x = as.matrix(t(log_mat)), batchlabels = factor(batchid))
-    
-    adj_log_t <- pamr.batchadjust(pam_input)$x      # features x samples (log-scale)
-    adj_log   <- t(adj_log_t)                        # back to samples x features
-    
-    # ---- make it non-negative for distances ----
-    # inverse of log() is exp(); clip numerical fuzz; re-TSS
-    adj_pos <- exp(adj_log)
-    adj_pos[!is.finite(adj_pos)] <- 0
-    adj_pos[adj_pos < 0] <- 0
-    adj_pos <- normalize_tss(adj_pos)
-    
-    post_summary(adj_pos, "BMC (positive)")
-    write_out(adj_pos, file.path(output_folder, "normalized_bmc.csv"))
+    require(pamr)
+    # Use PN-positive to ensure proportions then log
+    X_pos  <- get_input_for("PN", base_M, base_form)
+    X_tss  <- .normalize_tss(X_pos)
+    zmin   <- min(X_tss[X_tss > 0]); if (!is.finite(zmin)) fail_step("BMC", "No non-zero entries.")
+    X_tss[X_tss == 0] <- zmin * 0.65
+    X_log  <- log(X_tss)
+    pam_in <- list(x = as.matrix(t(X_log)), batchlabels = factor(batchid))
+    adj_log <- t(pamr.batchadjust(pam_in)$x)
+    write_clr("BMC", adj_log, "log", "normalized_bmc.csv")
   })
 }
 
-# limma
+# limma — expects log
 if ("limma" %in% method_list) {
   run_method("limma", {
-    suppressPackageStartupMessages(suppressWarnings(require(limma)))
-    
-    # 1) Pseudocount and log
-    mat <- as.matrix(taxa_mat)
-    nz <- mat[mat > 0]
-    if (!length(nz)) fail_step("limma", "No positive entries to define pseudo.")
-    pseudo <- min(nz) * 0.65
-    mat[mat == 0] <- pseudo
-    
-    log_mat <- log(mat)  # natural log is fine; base doesn't matter if you invert with exp()
-    
-    # 2) Batch removal on log scale
-    limma_corrected_log_t <- removeBatchEffect(
-      t(log_mat),
+    require(limma)
+    X_log <- get_input_for("limma", base_M, base_form)
+    adj_t <- removeBatchEffect(
+      t(X_log),
       batch = factor(batchid),
       covariates = if (ncol(covar) > 0) as.matrix(covar) else NULL
     )
-    limma_corrected_log <- t(limma_corrected_log_t)
-    
-    # 3) Back to positive space for distances / downstream tools
-    limma_pos <- exp(limma_corrected_log)
-    limma_pos[!is.finite(limma_pos)] <- 0
-    limma_pos[limma_pos < 0] <- 0
-    limma_pos <- normalize_tss(limma_pos)  # rows sum to 1
-    
-    post_summary(limma_pos, "limma (positive)")
-    write_out(limma_pos, file.path(output_folder, "normalized_limma.csv"))
+    adj <- t(adj_t)
+    write_clr("limma", adj, "log", "normalized_limma.csv")
   })
 }
 
-# ConQuR
+# ConQuR — expects positive
 if ("ConQuR" %in% method_list) {
   run_method("ConQuR", {
-    suppressPackageStartupMessages(suppressWarnings({
-      library(ConQuR); library(doParallel)
-    }))
-    num_cores <- max(1, parallel::detectCores(logical = TRUE) - 1)
-    say("ConQuR cores: ", num_cores)
-    batchidF <- as.factor(metadata$batchid)
-    batch_ref <- as.character(reference_batch)
-    covariates <- metadata[, colnames(covar), drop = FALSE]
-    rownames(covariates) <- NULL
-    
-    res <- withCallingHandlers(
+    suppressPackageStartupMessages({ library(ConQuR); library(doParallel) })
+    X_pos <- get_input_for("ConQuR", base_M, base_form)
+    covariates <- metadata[, colnames(covar), drop = FALSE]; rownames(covariates) <- NULL
+    num_cores <- max(1, parallel::detectCores(TRUE) - 1)
+    res_pos <- suppressWarnings(
       ConQuR(
-        tax_tab = taxa_mat,
-        batchid = batchidF,
+        tax_tab = X_pos,
+        batchid = as.factor(metadata$batchid),
         covariates = covariates,
-        batch_ref = batch_ref,
-        logistic_lasso = FALSE,
-        quantile_type = "standard",
-        simple_match = FALSE,
-        lambda_quantile = "2p/n",
-        interplt = FALSE,
-        delta = 0.4999,
-        taus = seq(0.05, 0.95, by = 0.05),
-        num_core = num_cores
-      ),
-      warning = function(w) {
-        msg <- conditionMessage(w)
-        if (grepl("Solution may be nonunique", msg) ||
-            grepl("^glm\\.fit:", msg)) {
-          # silence these recurring warnings
-          invokeRestart("muffleWarning")
-        } else {
-          warn_step("ConQuR", msg)
-        }
-      }
+        batch_ref = as.character(reference_batch),
+        logistic_lasso = FALSE, quantile_type = "standard", simple_match = FALSE,
+        lambda_quantile = "2p/n", interplt = FALSE, delta = 0.4999,
+        taus = seq(0.05, 0.95, by = 0.05), num_core = num_cores
+      )
     )
-    
-    post_summary(res, "ConQuR")
-    write_out(res, file.path(output_folder, "normalized_conqur.csv"))
+    write_clr("ConQuR", res_pos, "positive", "normalized_conqur.csv")
   })
 }
 
-# PLSDA
+# PLSDA — expects CLR
 if ("PLSDA" %in% method_list) {
   run_method("PLSDAbatch", {
-    suppressPackageStartupMessages(suppressWarnings({
-      library(PLSDAbatch)
-      library(compositions)
-    }))
-    
-    if (!("phenotype" %in% colnames(metadata)))
-      fail_step("PLSDAbatch", "'phenotype' not found.")
-    if (length(unique(metadata$phenotype)) != 2)
-      fail_step("PLSDAbatch", "'phenotype' must be binary.")
-    
-    # CLR transform
-    taxa_clr <- compositions::clr(taxa_mat + 1)
-    
-    # Run PLSDA batch correction
-    Y.trt <- as.factor(metadata$phenotype)
-    Y.bat <- as.factor(metadata$batchid)
-    result <- PLSDA_batch(
-      X = taxa_clr,
-      Y.trt = Y.trt,
-      Y.bat = Y.bat,
-      ncomp.trt = 1,
-      ncomp.bat = 5
+    require(PLSDAbatch)
+    if (!("phenotype" %in% colnames(metadata))) fail_step("PLSDAbatch", "'phenotype' not found.")
+    if (length(unique(metadata$phenotype)) != 2) fail_step("PLSDAbatch", "'phenotype' must be binary.")
+    X_clr <- get_input_for("PLSDA", base_M, base_form)
+    res <- PLSDA_batch(
+      X = X_clr,
+      Y.trt = as.factor(metadata$phenotype),
+      Y.bat = as.factor(metadata$batchid),
+      ncomp.trt = 1, ncomp.bat = 5
     )
-    
-    # Corrected matrix (still in CLR space)
-    out <- result$X.nobatch
-    
-    # ---- Back-transform to positive ----
-    out_pos <- compositions::clrInv(out)  # inverse CLR → positive ratios
-    out_pos[!is.finite(out_pos)] <- 0
-    out_pos[out_pos < 0] <- 0
-    out_pos <- normalize_tss(out_pos)     # row sums = 1
-    
-    post_summary(out_pos, "PLSDAbatch (positive)")
-    write_out(out_pos, file.path(output_folder, "normalized_plsda.csv"))
+    write_clr("PLSDAbatch", res$X.nobatch, "clr", "normalized_plsda.csv")
   })
 }
 
-# ComBat-Seq
-if ("ComBatSeq" %in% method_list) {
-  run_method("ComBat-Seq", {
-    require(sva)
-    if (!("phenotype" %in% colnames(metadata))) fail_step("ComBat-Seq", "'phenotype' is required.")
-    count_matrix <- round(as.matrix(taxa_mat) * 100)
-    library_sizes <- rowSums(count_matrix)
-    nonzero_samples <- library_sizes > 0
-    if (any(!nonzero_samples)) {
-      say("ComBat-Seq: removing ", sum(!nonzero_samples), " samples with zero library size: ",
-          paste(rownames(count_matrix)[!nonzero_samples], collapse = ", "))
-      count_matrix <- count_matrix[nonzero_samples, , drop = FALSE]
-      metadata <- metadata[nonzero_samples, , drop = FALSE]
-    }
-    if (!all(rownames(count_matrix) == rownames(metadata))) {
-      fail_step("ComBat-Seq", "Sample IDs mismatch after filtering.")
-    }
-    combat_seq <- ComBat_seq(counts = t(count_matrix),  # genes x samples
-                             batch = metadata$batchid,
-                             group = metadata$phenotype)
-    out <- t(combat_seq)
-    rownames(out) <- rownames(count_matrix)
-    colnames(out) <- colnames(count_matrix)
-    post_summary(out, "ComBat-Seq")
-    write_out(out, file.path(output_folder, "normalized_combatseq.csv"))
-  })
-}
-
-# ComBat
+# ComBat — expects log
 if ("ComBat" %in% method_list) {
   run_method("ComBat", {
-    suppressPackageStartupMessages(suppressWarnings(require(sva)))
-    
-    # 1) Add pseudocount
-    mat <- as.matrix(taxa_mat)
-    nz <- mat[mat > 0]
-    if (!length(nz))
-      fail_step("ComBat", "No positive entries to define pseudocount.")
-    pseudo <- min(nz) * 0.65
-    mat[mat == 0] <- pseudo
-    
-    # 2) Log-transform (base 2)
-    log_mat_t <- t(log2(mat))
-    
-    # 3) Build model
-    mod <- if (ncol(covar) > 0) model.matrix(~ ., data = covar) else NULL
-    
-    # 4) Run ComBat
-    combat_log_t <- ComBat(
-      dat = log_mat_t,
+    require(sva)
+    X_log <- get_input_for("ComBat", base_M, base_form)
+    adj_t <- ComBat(
+      dat = t(X_log),
       batch = batchid,
-      mod = mod,
-      par.prior = FALSE,
-      prior.plots = FALSE
+      mod = if (ncol(covar) > 0) model.matrix(~ ., data = covar) else NULL,
+      par.prior = FALSE, prior.plots = FALSE
     )
-    combat_log <- t(combat_log_t)
-    
-    # 5) Back-transform to positive space
-    combat_pos <- 2^combat_log
-    combat_pos[!is.finite(combat_pos)] <- 0
-    combat_pos[combat_pos < 0] <- 0
-    combat_pos <- normalize_tss(combat_pos)  # row sums = 1
-    
-    post_summary(combat_pos, "ComBat (positive)")
-    write_out(combat_pos, file.path(output_folder, "normalized_combat.csv"))
+    adj <- t(adj_t)
+    write_clr("ComBat", adj, "log", "normalized_combat.csv")
   })
 }
 
-# FSQN
+# FSQN — expects positive
 if ("FSQN" %in% method_list) {
   run_method("FSQN", {
     require(FSQN)
-    normalized <- quantileNormalizeByFeature(taxa_mat, ref_matrix)
-    post_summary(normalized, "FSQN")
-    write_out(normalized, file.path(output_folder, "normalized_fsqn.csv"))
+    X_pos <- get_input_for("FSQN", base_M, base_form)
+    ref_pos <- X_pos[ref_idx, , drop=FALSE]
+    out_pos <- quantileNormalizeByFeature(X_pos, ref_pos)
+    write_clr("FSQN", out_pos, "positive", "normalized_fsqn.csv")
   })
 }
 
-# MMUPHin
+# MMUPHin — expects positive (or counts)
 if ("MMUPHin" %in% method_list) {
   run_method("MMUPHin", {
     require(MMUPHin)
-    count_mat <- round(as.matrix(taxa_mat))  # counts guard
-    count_mat[count_mat < 0] <- 0
-    taxa_t <- t(count_mat)
-    metadata$batchid <- factor(metadata$batchid)
+    X_pos <- get_input_for("MMUPHin", base_M, base_form)
     fit <- adjust_batch(
-      feature_abd = taxa_t,
+      feature_abd = t(round(X_pos)),        # integer-ish positive abundances
       batch       = "batchid",
       covariates  = colnames(covar),
-      data        = metadata,
-      control     = list(verbose = FALSE,
-                         diagnostic_plot = NULL)
+      data        = transform(metadata, batchid=factor(batchid)),
+      control     = list(verbose = FALSE, diagnostic_plot = NULL)
     )
-    out <- t(fit$feature_abd_adj)
-    post_summary(out, "MMUPHin")
-    write_out(out, file.path(output_folder, "normalized_mmuphin.csv"))
+    out_pos <- t(fit$feature_abd_adj)
+    write_clr("MMUPHin", out_pos, "positive", "normalized_mmuphin.csv")
   })
 }
 
-# RUV (fastRUV-III-NB) — robust ctl handling
+# RUV (fastRUV-III-NB) — expects counts
 if ("RUV" %in% method_list) {
   run_method("fastRUV-III-NB", {
-    suppressPackageStartupMessages(suppressWarnings({
-      library(ruvIIInb)
-    }))
-    
-    # start clean
-    try(closeAllConnections(), silent = TRUE)
-    try({ while (dev.cur() > 1) dev.off() }, silent = TRUE)
-    invisible(gc())
-    
-    # genes x samples (counts already prepared upstream)
-    Y <- t(as.matrix(taxa_mat))
-    
-    # enforce sample order and drop obvious all-zero genes
-    stopifnot(!is.null(colnames(Y)))
+    suppressPackageStartupMessages(library(ruvIIInb))
+    Y <- t(get_input_for("RUV", base_M, base_form))  # genes x samples counts
+    if (is.null(colnames(Y))) colnames(Y) <- rownames(metadata)
     samp_ids <- colnames(Y)
-    if (is.null(rownames(metadata)) || !all(samp_ids %in% rownames(metadata))) {
-      fail_step("RUV", "metadata rownames must be sample IDs matching colnames(taxa_mat).")
-    }
-    keep_genes <- rowSums(Y) > 0
-    if (!any(keep_genes)) fail_step("RUV", "All genes have zero counts.")
-    Y <- Y[keep_genes, samp_ids, drop = FALSE]
-    
-    # ---- ctl as ALL feature names (so ruvIIInb can remap after its own filtering)
+    if (is.null(rownames(metadata)) || !all(samp_ids %in% rownames(metadata)))
+      fail_step("RUV", "metadata rownames must match colnames.")
+    keep <- rowSums(Y) > 0
+    if (!any(keep)) fail_step("RUV", "All genes have zero counts.")
+    Y <- Y[keep, samp_ids, drop=FALSE]
     ctl_names <- rownames(Y)
-    
-    # design matrices in the exact Y sample order
-    batch_factor  <- factor(metadata[samp_ids, "batchid"])
-    M             <- model.matrix(~ 0 + batch_factor)
-    rownames(M)   <- samp_ids
-    batch_numeric <- as.numeric(batch_factor)
-    
-    # sanity checks
-    stopifnot(identical(rownames(M), samp_ids))
-    stopifnot(length(batch_numeric) == ncol(Y))
-    
-    # modest parallelism
-    workers <- max(1L, min(4L, parallel::detectCores(logical = TRUE) - 1L))
-    
-    ruv_result <- fastruvIII.nb(
-      Y                = as.matrix(Y),  # in-memory
-      M                = M,             # samples x groups
-      ctl              = ctl_names,     # character vector (safe across internal filtering)
-      batch            = batch_numeric, # length == ncol(Y)
-      k                = 2,
-      pCells.touse     = 0.05,          # 5% subsample for alpha (speed)
-      use.pseudosample = FALSE,
-      ncores           = workers
+    batch_factor <- factor(metadata[samp_ids, "batchid"])
+    M <- model.matrix(~ 0 + batch_factor); rownames(M) <- samp_ids
+    fit <- fastruvIII.nb(
+      Y = as.matrix(Y), M = M, ctl = ctl_names,
+      batch = as.numeric(batch_factor), k = 2,
+      pCells.touse = 0.05, use.pseudosample = FALSE,
+      ncores = max(1L, min(4L, parallel::detectCores(TRUE) - 1L))
     )
-    
-    corrected_log <- assay(ruv_result, "logPAC")
-    out <- as.matrix(t(corrected_log))  # back to samples x features
-    
-    post_summary(out, "RUV-III-NB")
-    write_out(out, file.path(output_folder, "normalized_ruv.csv"))
-    
-    # clean after
-    try(closeAllConnections(), silent = TRUE)
-    try({ while (dev.cur() > 1) dev.off() }, silent = TRUE)
-    invisible(gc())
+    out_log <- t(assay(fit, "logPAC"))
+    write_clr("RUV-III-NB", out_log, "log", "normalized_ruv.csv")
   })
 }
 
-# PN
+# MetaDICT — expects positive
+if ("MetaDICT" %in% method_list) {
+  run_method("MetaDICT", {
+    suppressPackageStartupMessages({ library(MetaDICT); library(vegan) })
+    O <- t(get_input_for("MetaDICT", base_M, base_form))
+    meta <- transform(metadata, batch = batchid)
+    O <- O[rowSums(O) > 0, , drop=FALSE]
+    if (nrow(O) < 2) fail_step("MetaDICT", "Too few non-zero samples.")
+    D <- as.matrix(vegdist(O, method = "bray"))
+    res <- MetaDICT(O, meta, distance_matrix = D)
+    out_pos <- t(res$count)
+    write_clr("MetaDICT", out_pos, "positive", "normalized_metadict.csv")
+  })
+}
+
+# SVD — expects log
+if ("SVD" %in% method_list) {
+  run_method("SVD", {
+    cat("Running SVD-based batch correction in log/CLR space...\n")
+    X_log <- get_input_for("SVD", base_M, base_form)
+    # Replace non-finite with row means
+    X_log <- t(apply(X_log, 1, function(r){ r[!is.finite(r)] <- NA; r[is.na(r)] <- mean(r, na.rm = TRUE); r }))
+    
+    # Identify variable features
+    feature_sd <- apply(X_log, 2, sd)
+    zero_var_cols <- which(feature_sd == 0)
+    variable_cols <- setdiff(seq_len(ncol(X_log)), zero_var_cols)
+    if (!length(variable_cols)) fail_step("SVD", "All features zero variance.")
+    
+    Xv <- X_log[, variable_cols, drop = FALSE]
+    mu <- colMeans(Xv); sdv <- apply(Xv, 2, sd)
+    Z  <- scale(Xv, center = TRUE, scale = TRUE)
+    
+    # Remove first principal component (surrogate/batch component)
+    s  <- svd(crossprod(Z))
+    a1 <- s$u[,1]
+    t1 <- Z %*% a1 / sqrt(drop(crossprod(a1)))
+    c1 <- crossprod(Z, t1) / drop(crossprod(t1))
+    Zdef <- Z - t1 %*% t(c1)
+    
+    # Rescale back to log space
+    Xrest <- sweep(Zdef, 2, sdv, `*`)
+    Xrest <- sweep(Xrest, 2, mu, `+`)
+    
+    full <- X_log
+    full[, variable_cols] <- Xrest
+    if (length(zero_var_cols) > 0) full[, zero_var_cols] <- X_log[, zero_var_cols]
+    
+    write_clr("SVD", full, "log", "normalized_svd.csv")
+  })
+}
+
+# PN — expects positive
 if ("PN" %in% method_list) {
   run_method("PN", {
     if (!("phenotype" %in% colnames(metadata))) fail_step("PN", "'phenotype' is required.")
     pheno_vals <- unique(metadata$phenotype)
     if (length(pheno_vals) != 2) fail_step("PN", "'phenotype' must be binary.")
     trt <- as.numeric(factor(metadata$phenotype, levels = sort(pheno_vals))) - 1
-    tss <- normalize_tss(taxa_mat)
-    if (all(tss == 0)) fail_step("PN", "All zero after TSS.")
-    pn_corrected <- percentile_norm(data = tss, batch = metadata$batchid, trt = trt, ctrl.grp = 0)
-    post_summary(pn_corrected, "PN")
-    write_out(pn_corrected, file.path(output_folder, "normalized_pn.csv"))
+    X_pos <- get_input_for("PN", base_M, base_form)
+    X_tss <- .normalize_tss(X_pos)
+    if (all(X_tss == 0)) fail_step("PN", "All zero after TSS.")
+    pn_pos <- percentile_norm(data = X_tss, batch = metadata$batchid, trt = trt, ctrl.grp = 0)
+    write_clr("PN", pn_pos, "positive", "normalized_pn.csv")
   })
 }
 
-# MetaDICT
-if ("MetaDICT" %in% method_list) {
-  run_method("MetaDICT", {
-    suppressPackageStartupMessages(suppressWarnings({
-      library(MetaDICT); library(vegan)
-    }))
-    O <- t(as.matrix(taxa_mat))
-    meta <- metadata
-    meta$batch <- meta$batchid
-    O <- O[rowSums(O) > 0, , drop=FALSE]
-    if (nrow(O) < 2) fail_step("MetaDICT", "Too few non-zero samples after filtering.")
-    dist_mat <- as.matrix(vegdist(O, method = "bray"))
-    metadict_res <- MetaDICT(O, meta, distance_matrix = dist_mat)
-    corrected_mat <- t(metadict_res$count)
-    post_summary(corrected_mat, "MetaDICT")
-    write_out(corrected_mat, file.path(output_folder, "normalized_metadict.csv"))
-  })
-}
-
-# SVD
-if ("SVD" %in% method_list) {
-  run_method("SVD", {
-    cat("Running SVD-based batch correction...\n")
-    
-    # CLR-like transform
-    clr_matrix <- log2(normalize_tss(taxa_mat) + 1e-6)
-    
-    # Replace non-finite values with row means
-    clr_matrix <- t(apply(clr_matrix, 1, function(x) {
-      x[!is.finite(x)] <- NA
-      x[is.na(x)] <- mean(x, na.rm = TRUE)
-      x
-    }))
-    
-    # Identify zero-SD features
-    feature_sd <- apply(clr_matrix, 2, sd)
-    zero_var_cols <- which(feature_sd == 0)
-    variable_cols <- setdiff(seq_len(ncol(clr_matrix)), zero_var_cols)
-    
-    if (!length(variable_cols)) fail_step("SVD", "All features zero variance; nothing to correct.")
-    
-    # Center and scale variable features
-    clr_var <- clr_matrix[, variable_cols, drop = FALSE]
-    feature_mean <- apply(clr_var, 2, mean)
-    feature_sd <- apply(clr_var, 2, sd)
-    X_scaled <- scale(clr_var, center = TRUE, scale = TRUE)
-    
-    # Run SVD on covariance
-    svd_decomp <- svd(crossprod(X_scaled))
-    a1 <- svd_decomp$u[, 1]
-    t1 <- X_scaled %*% a1 / sqrt(drop(crossprod(a1)))
-    c1 <- crossprod(X_scaled, t1) / drop(crossprod(t1))
-    X_deflated <- X_scaled - t1 %*% t(c1)
-    
-    # Rescale back to original mean/sd
-    X_restored <- sweep(X_deflated, 2, feature_sd, `*`)
-    X_restored <- sweep(X_restored, 2, feature_mean, `+`)
-    
-    # Build final matrix with restored constant features
-    full_matrix <- matrix(NA, nrow = nrow(clr_matrix), ncol = ncol(clr_matrix))
-    colnames(full_matrix) <- colnames(clr_matrix)
-    rownames(full_matrix) <- rownames(clr_matrix)
-    full_matrix[, variable_cols] <- X_restored
-    if (length(zero_var_cols) > 0) {
-      full_matrix[, zero_var_cols] <- clr_matrix[, zero_var_cols]
-    }
-    
-    # ---- Back-transform to positive space ----
-    positive_matrix <- 2^full_matrix - 1e-6          # still a matrix
-    positive_matrix[positive_matrix < 0] <- 0        # clamp negatives to 0
-    
-    # TSS-normalize rows
-    positive_matrix <- normalize_tss(positive_matrix)
-    
-    post_summary(positive_matrix, "SVD")
-    write_out(positive_matrix, file.path(output_folder, "normalized_svd.csv"))
-  })
-}
-
-# FAbatch (simple & robust)
+# FAbatch — expects log
 if ("FAbatch" %in% method_list) {
   run_method("FAbatch", {
-    suppressPackageStartupMessages(suppressWarnings(library(bapred)))
-    
+    suppressPackageStartupMessages(library(bapred))
     if (!("phenotype" %in% colnames(metadata))) fail_step("FAbatch", "'phenotype' is required.")
     pheno_vals <- unique(metadata$phenotype)
     if (length(pheno_vals) != 2) fail_step("FAbatch", "'phenotype' must be binary.")
     
-    # Build log-TSS features (continuous); replace non-finite per row
-    X <- as.matrix(log2(normalize_tss(taxa_mat) + 1e-6))
-    X <- t(apply(X, 1, function(r){
+    X_log <- get_input_for("FAbatch", base_M, base_form)
+    # replace non-finite per row
+    X_log <- t(apply(X_log, 1, function(r){
       r[!is.finite(r)] <- NA
       r[is.na(r)] <- mean(r, na.rm = TRUE)
       r
@@ -649,71 +598,66 @@ if ("FAbatch" %in% method_list) {
     y     <- factor(metadata$phenotype, levels = sort(pheno_vals))
     batch <- factor(metadata$batchid)
     
-    # Variance filter (very lenient)
-    v  <- apply(X, 2, var)
+    v  <- apply(X_log, 2, var)
     keep_var <- is.finite(v) & v > 1e-12
     if (!any(keep_var)) fail_step("FAbatch", "All features ~zero variance.")
-    Xv <- X[, keep_var, drop = FALSE]
+    Xv <- X_log[, keep_var, drop = FALSE]
     
-    # Ensure p > n_b for *every* batch
     max_nb <- max(table(batch))
-    # pick K = min(p, max_nb + margin)
-    margin <- 5L
-    K      <- min(ncol(Xv), max_nb + margin)
+    K      <- min(ncol(Xv), max_nb + 5L)
     if (K <= max_nb) {
-      fail_step("FAbatch", sprintf("Not enough informative features to satisfy p > max batch size (have %d, need > %d).", ncol(Xv), max_nb))
+      fail_step("FAbatch", sprintf("Need p > max batch size (have %d, need > %d).", ncol(Xv), max_nb))
     }
     
-    # Select top-K variance features (no PCA, keeps life simple)
     ord <- order(apply(Xv, 2, var), decreasing = TRUE)
     sel <- ord[seq_len(K)]
     Xk  <- Xv[, sel, drop = FALSE]
     
-    # Standardize for fabatch
     Xz <- scale(Xk, center = TRUE, scale = TRUE)
     
-    # Try fabatch with conservative settings
     fa_out <- tryCatch(
       fabatch(
         x = Xz, y = y, batch = batch,
-        nbf = NULL,          # let it choose up to maxnbf
-        minerr = 1e-6,
-        probcrossbatch = FALSE,
-        maxiter = 100,
-        maxnbf  = 8
+        nbf = NULL, minerr = 1e-6, probcrossbatch = FALSE, maxiter = 100, maxnbf = 8
       ),
       error = function(e) e
     )
     
     if (inherits(fa_out, "error")) {
-      # Final fallback: tiny jitter to break collinearity
-      warn_step("FAbatch", paste("Retrying with tiny jitter due to:", conditionMessage(fa_out)))
-      Xz_jit <- Xz + matrix(rnorm(length(Xz), 0, 1e-8), nrow(Xz))
+      warn_step("FAbatch", paste("Retry with tiny jitter:", conditionMessage(fa_out)))
+      Xz <- Xz + matrix(rnorm(length(Xz), 0, 1e-8), nrow(Xz))
       fa_out <- fabatch(
-        x = Xz_jit, y = y, batch = batch,
+        x = Xz, y = y, batch = batch,
         nbf = NULL, minerr = 1e-6, probcrossbatch = FALSE, maxiter = 100, maxnbf = 8
       )
     }
     
-    # Adjusted subset
-    Xadj_sub <- fa_out$xadj
-    # Un-standardize back to log space
+    Xadj <- X_log
     m <- attr(Xz, "scaled:center"); s <- attr(Xz, "scaled:scale")
-    Xadj_sub <- sweep(Xadj_sub, 2, s, `*`)
+    Xadj_sub <- sweep(fa_out$xadj, 2, s, `*`)
     Xadj_sub <- sweep(Xadj_sub, 2, m, `+`)
+    Xadj[, colnames(Xk)] <- Xadj_sub
     
-    # Rebuild full matrix: adjusted for selected features, original for the rest
-    out <- X
-    colnames(out) <- colnames(X)  # already set
-    out[, colnames(Xk)] <- Xadj_sub
-    
-    # Optional: map to positive row-normalized abundances for downstream distances
-    pos <- 2^out - 1e-6
-    pos[pos < 0] <- 0
-    pos <- normalize_tss(pos)
-    
-    post_summary(pos, "FAbatch")
-    write_out(pos, file.path(output_folder, "normalized_fabatch.csv"))
+    write_clr("FAbatch", Xadj, "log", "normalized_fabatch.csv")
+  })
+}
+
+# ComBat-Seq — expects counts
+if ("ComBatSeq" %in% method_list) {
+  run_method("ComBat-Seq", {
+    require(sva)
+    if (!("phenotype" %in% colnames(metadata))) fail_step("ComBat-Seq", "'phenotype' is required.")
+    counts <- get_input_for("ComBatSeq", base_M, base_form)
+    libsz <- rowSums(counts); keep <- libsz > 0
+    if (any(!keep)) {
+      say("ComBat-Seq: removing ", sum(!keep), " samples with zero library size.")
+      counts  <- counts[keep, , drop = FALSE]
+      metadata <- metadata[keep, , drop = FALSE]
+    }
+    if (!all(rownames(counts) == rownames(metadata))) fail_step("ComBat-Seq", "Sample IDs mismatch after filtering.")
+    adj <- ComBat_seq(counts = t(counts), batch = metadata$batchid, group = metadata$phenotype)
+    out_counts <- t(adj)
+    write_clr("ComBat-Seq", out_counts, "counts", "normalized_combatseq.csv")
   })
 }
 
@@ -729,7 +673,7 @@ expected_outputs <- list(
 )
 
 audit_outputs <- function(selected, out_dir) {
-  say("— Output audit —")
+  say("— Output audit (all outputs are CLR) —")
   for (m in selected) {
     fname <- expected_outputs[[m]]
     if (is.null(fname)) { say("  ", m, ": (no declared output)"); next }
@@ -743,5 +687,5 @@ audit_outputs <- function(selected, out_dir) {
   }
 }
 
-say("🎉 All requested methods completed.")
+say("🎉 All requested methods completed. (Outputs are CLR)")
 audit_outputs(method_list, output_folder)
