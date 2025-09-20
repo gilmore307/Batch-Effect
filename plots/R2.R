@@ -8,6 +8,18 @@ suppressPackageStartupMessages({
 })
 
 # ----------------- Args / IO -----------------
+
+# Map method codes to short labels for figures
+method_short_label <- function(x) {
+  map <- c(
+    qn = "QN", bmc = "BMC", limma = "Limma", conqur = "ConQuR",
+    plsda = "PLSDA-batch", combat = "ComBat", fsqn = "FSQN", mmuphin = "MMUPHin",
+    ruv = "RUV-III-NB", metadict = "MetaDICT", svd = "SVD", pn = "PN",
+    fabatch = "FAbatch", combatseq = "ComBat-seq", debias = "DEBIAS-M"
+  )
+  sapply(x, function(v){ lv <- tolower(v); if (lv %in% names(map)) map[[lv]] else v })
+}
+
 args <- commandArgs(trailingOnly = TRUE)
 if (length(args) < 1) {
   args <- "output/example"  # default folder for quick runs
@@ -17,6 +29,10 @@ if (!dir.exists(output_folder)) dir.create(output_folder, recursive = TRUE)
 
 metadata <- read_csv(file.path(output_folder, "metadata.csv"), show_col_types = FALSE) |>
   mutate(sample_id = as.character(sample_id))
+}
+if (!("batch_id" %in% names(metadata)) && ("batch_id" %in% names(metadata))) {
+  metadata$batch_id <- metadata$batch_id
+}
 
 # ---- Find normalized files ----
 clr_paths <- list.files(output_folder, pattern = "^normalized_.*_clr\\.csv$", full.names = TRUE)
@@ -30,8 +46,8 @@ if (!length(clr_paths) && !length(tss_paths)) {
 }
 
 name_from <- function(paths, suffix) gsub(paste0("^normalized_|_", suffix, "\\.csv$"), "", basename(paths))
-file_list_clr <- setNames(clr_paths, if (length(clr_paths)) name_from(clr_paths, "clr") else character())
-file_list_tss <- setNames(tss_paths, if (length(tss_paths)) name_from(tss_paths, "tss") else character())
+file_list_clr <- setNames(clr_paths, method_short_label(name_from(clr_paths, "clr")))
+file_list_tss <- setNames(tss_paths, method_short_label(name_from(tss_paths, "tss")))
 
 # Include raw_clr.csv / raw_tss.csv as "Before correction" if present
 raw_clr_fp <- file.path(output_folder, "raw_clr.csv")
@@ -80,7 +96,7 @@ anova_r2 <- function(y, g) {
 }
 
 # ----------------- Core: per-feature one-way ANOVA R^2 (Batch vs Treatment) -----------------
-compute_anova_r2_BT <- function(df, meta, batch_col = "batchid", treat_col = "phenotype", geometry = c("CLR","TSS")) {
+compute_anova_r2_BT <- function(df, meta, batch_col = "batch_id", treat_col = "phenotype", geometry = c("CLR","TSS")) {
   geometry <- match.arg(geometry)
   # align to metadata
   if (!"sample_id" %in% names(df)) {
@@ -128,11 +144,11 @@ compute_anova_r2_BT <- function(df, meta, batch_col = "batchid", treat_col = "ph
 }
 
 # ----------------- Build per-feature R^2 across all methods -----------------
-batch_col <- "batchid"
+batch_col <- "batch_id"
 treat_col <- "phenotype"
 if (!("phenotype" %in% names(metadata))) stop("metadata.csv lacks 'phenotype'.")
 if (dplyr::n_distinct(metadata$phenotype) < 2) stop("'phenotype' needs at least 2 levels.")
-if (dplyr::n_distinct(metadata$batchid)   < 2) stop("'batchid' needs at least 2 levels.")
+if (dplyr::n_distinct(metadata$batch_id)   < 2) stop("'batch_id' needs at least 2 levels.")
 
 # CLR set
 r2_long_clr <- lapply(names(file_list_clr), function(nm) {
@@ -161,7 +177,7 @@ tidy_long <- function(df, method_levels) {
   df %>%
     mutate(
       Effect = case_when(
-        tolower(Effect) %in% c("batch","batchid","batch_id") ~ "Batch",
+        tolower(Effect) %in% c("batch","batch_id","batch_id") ~ "Batch",
         tolower(Effect) %in% c("treatment","phenotype","group","trt") ~ "Treatment",
         TRUE ~ Effect
       ),
@@ -215,11 +231,11 @@ make_boxplot <- function(r2_long_df, method_levels, title) {
 
 p_clr <- make_boxplot(
   r2_long_clr, method_levels_clr,
-  expression("Per-feature " * R^2 * " (one-way ANOVA) — CLR (Aitchison)")
+  expression("Per-feature " * R^2 * " (one-way ANOVA) - CLR (Aitchison)")
 )
 p_tss <- make_boxplot(
   r2_long_tss, method_levels_tss,
-  expression("Per-feature " * R^2 * " (one-way ANOVA) — TSS (proportions)")
+  expression("Per-feature " * R^2 * " (one-way ANOVA) - TSS (proportions)")
 )
 
 if (!is.null(p_clr)) {
@@ -268,7 +284,7 @@ if (only_baseline) {
     mt <- med_tbl$median_R2[med_tbl$Effect == "Treatment"]
     needs_corr <- is.finite(mb) && (mb > mt || mb > 0.05)
     assess_rows[["TSS"]] <- tibble::tibble(
-      Geometry = "Bray–Curtis (TSS)",
+      Geometry = "Bray-Curtis (TSS)",
       Median_R2_Batch = mb,
       Median_R2_Treatment = mt,
       Needs_Correction = needs_corr
@@ -276,12 +292,12 @@ if (only_baseline) {
   }
   assess_df <- dplyr::bind_rows(assess_rows)
   print(assess_df, n = nrow(assess_df))
-  readr::write_csv(assess_df, file.path(output_folder, "r2_raw_assessment.csv"))
+readr::write_csv(assess_df, file.path(output_folder, "R2_raw_assessment.csv"))
   
   if (any(assess_df$Needs_Correction, na.rm = TRUE)) {
-    message("R2 assessment: Batch explains as much or more variance than Treatment (and/or > 0.05) in at least one geometry — correction recommended.")
+    message("R2 assessment: Batch explains as much or more variance than Treatment (and/or > 0.05) in at least one geometry - correction recommended.")
   } else {
-    message("R2 assessment: Batch effect appears modest relative to Treatment — correction may not be necessary.")
+    message("R2 assessment: Batch effect appears modest relative to Treatment - correction may not be necessary.")
   }
   
 } else {
@@ -297,6 +313,6 @@ if (only_baseline) {
     arrange(desc(Combined_Score)) %>%
     mutate(Rank = row_number())
   
-  readr::write_csv(ranking_unified, file.path(output_folder, "r2_ranking.csv"))
+readr::write_csv(ranking_unified, file.path(output_folder, "R2_ranking.csv"))
   print(ranking_unified, n = nrow(ranking_unified))
 }

@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Sequence, Tuple
 
-from dash import html
+from dash import html, dcc
 import dash_bootstrap_components as dbc
 
 # Paths & constants
@@ -97,6 +97,44 @@ SUPPORTED_METHODS: Sequence[Tuple[str, str]] = (
     ("DEBIAS", "DEBIAS"),
 )
 
+# Map method identifiers (as they may appear in CSVs) to formal display names
+_FORMAL_MAP: Dict[str, str] = {code.lower(): display for code, display in SUPPORTED_METHODS}
+# Add common lowercase variants used by R outputs
+_FORMAL_ALIASES: Dict[str, str] = {
+    "qn": _FORMAL_MAP["qn"],
+    "bmc": _FORMAL_MAP["bmc"],
+    "limma": _FORMAL_MAP["limma"],
+    "conqur": _FORMAL_MAP["conqur"],
+    "plsda": _FORMAL_MAP["plsda"],
+    "plsdabatch": _FORMAL_MAP["plsda"],
+    "combat": _FORMAL_MAP["combat"],
+    "fsqn": _FORMAL_MAP["fsqn"],
+    "mmuphin": _FORMAL_MAP["mmuphin"],
+    "ruv": _FORMAL_MAP["ruv"],
+    "ruv-iiinb": _FORMAL_MAP["ruv"],
+    "ruviiinb": _FORMAL_MAP["ruv"],
+    "metadict": _FORMAL_MAP["metadict"],
+    "meta-dict": _FORMAL_MAP["metadict"],
+    "svd": _FORMAL_MAP["svd"],
+    "pn": _FORMAL_MAP["pn"],
+    "percentilenormalization": _FORMAL_MAP["pn"],
+    "fabatch": _FORMAL_MAP["fabatch"],
+    "combatseq": _FORMAL_MAP["combatseq"],
+    "combat-seq": _FORMAL_MAP["combatseq"],
+    "debias": _FORMAL_MAP["debias"],
+    "debias-m": _FORMAL_MAP["debias"],
+}
+
+def method_formal_name(name: str) -> str:
+    if not name:
+        return name
+    key = (name or "").strip()
+    # Keep special baseline label as-is
+    if key.lower() == "before correction":
+        return "Before correction"
+    lk = key.replace(" ", "").replace("_", "").lower()
+    return _FORMAL_ALIASES.get(lk, _FORMAL_MAP.get(lk, key))
+
 DEFAULT_METHODS: Sequence[str] = ("ComBat", "FSQN")
 
 
@@ -147,28 +185,43 @@ def save_uploaded_file(contents: str, directory: Path, dest_name: str) -> None:
 
 
 def run_command(command: Sequence[str], cwd: Path) -> Tuple[bool, str]:
+    def _s(val) -> str:
+        if val is None:
+            return ""
+        try:
+            return val.strip()
+        except Exception:
+            try:
+                return str(val).strip()
+            except Exception:
+                return ""
+
     try:
         result = subprocess.run(
             command,
             cwd=cwd,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             check=True,
         )
         log = textwrap.dedent(
             f"""
             $ {' '.join(command)}
-            {result.stdout.strip()}
-            {result.stderr.strip()}
+            {_s(result.stdout)}
+            {_s(result.stderr)}
             """
         ).strip()
         return True, log
     except subprocess.CalledProcessError as exc:
+        stdout = getattr(exc, "stdout", getattr(exc, "output", None))
+        stderr = getattr(exc, "stderr", None)
         log = textwrap.dedent(
             f"""
             $ {' '.join(command)}
-            {exc.stdout.strip()}
-            {exc.stderr.strip()}
+            {_s(stdout)}
+            {_s(stderr)}
             """
         ).strip()
         return False, log
@@ -235,6 +288,119 @@ def render_figures(session_dir: Path, figures: Sequence[FigureSpec]):
     return dbc.Row(cards, className="gy-2")
 
 
+def _read_csv_rows(csv_path: Path) -> Tuple[List[str], List[List[str]]]:
+    import csv as _csv
+    with csv_path.open("r", encoding="utf-8", newline="") as fh:
+        reader = _csv.reader(fh)
+        rows = list(reader)
+    if not rows:
+        return [], []
+    header = rows[0]
+    data = rows[1:] if len(rows) > 1 else []
+    return header, data
+
+
+def _find_file_case_insensitive(directory: Path, target_name: str) -> Path | None:
+    t = target_name.lower()
+    for p in directory.iterdir():
+        if p.is_file() and p.name.lower() == t:
+            return p
+    return None
+
+
+def _candidate_csvs_for_image(filename: str) -> List[str]:
+    stem = Path(filename).stem
+    s = stem.lower()
+    bases: List[str] = []
+    # image families with shared tables
+    if s.startswith("pcoa_"):
+        bases = ["pcoa"]
+    elif s.startswith("nmds_"):
+        bases = ["nmds"]
+    elif s.startswith("dissimilarity_") or s.startswith("dissimilarity-") or s.startswith("dissimilarity"):
+        bases = ["dissimilarity"]
+    elif s.startswith("r2_"):
+        bases = ["r2"]
+    elif s.startswith("prda_") or s.startswith("prda"):
+        bases = ["pRDA", "prda"]
+    elif s == "pvca":
+        bases = ["PVCA", "pvca"]
+    elif s == "alignment_score":
+        bases = ["alignment_score"]
+    elif s == "auroc":
+        bases = ["auroc"]
+    elif s == "lisi":
+        bases = ["LISI", "lisi"]
+    elif s == "ebm":
+        bases = ["ebm"]
+    elif s == "silhouette":
+        bases = ["silhouette"]
+    elif s == "pca":
+        bases = ["pca"]
+    else:
+        bases = [stem]
+
+    # Generate candidate filenames (prefer ranking first)
+    candidates: List[str] = []
+    for b in bases:
+        # ranking summary across methods
+        candidates.append(f"{b}_ranking.csv")
+    for b in bases:
+        # baseline-only assessment
+        candidates.append(f"{b}_raw_assessment.csv")
+    # Special LISI grid file
+    for b in bases:
+        if b.lower() == "lisi":
+            candidates.append(f"{b}_k_grid.csv")
+    return candidates
+
+
+def render_assessment_tabs(session_dir: Path, figures: Sequence[FigureSpec]):
+    """Render a tab set where each tab shows an image and an optional table.
+
+    The table is looked up by taking the PNG filename stem and using a CSV
+    with the same stem (e.g., pca.png -> pca.csv). If not found, only the
+    image is shown.
+    """
+    tabs = []
+    first_value = None
+    for idx, spec in enumerate(figures):
+        img_path = session_dir / spec.filename
+        if not img_path.exists():
+            continue
+        # Image
+        encoded = base64.b64encode(img_path.read_bytes()).decode("ascii")
+        src = f"data:image/png;base64,{encoded}"
+        img = html.Img(src=src, style={"maxWidth": "100%", "height": "auto"})
+
+        # Table (optional)
+        table_comp = None
+        # Try to resolve the matching CSV based on naming from R scripts
+        for cand in _candidate_csvs_for_image(spec.filename):
+            found = _find_file_case_insensitive(session_dir, cand)
+            if found and found.exists():
+                header, data = _read_csv_rows(found)
+                if header:
+                    thead = html.Thead(html.Tr([html.Th(h) for h in header]))
+                    tbody = html.Tbody([html.Tr([html.Td(cell) for cell in row]) for row in data])
+                    table_comp = dbc.Table([thead, tbody], bordered=True, hover=True, size="sm", className="mt-2")
+                break
+
+        content_children = [img]
+        if table_comp is not None:
+            content_children.append(table_comp)
+
+        tab = dcc.Tab(label=spec.label, value=f"tab-{idx}", children=html.Div(content_children))
+        tabs.append(tab)
+        if first_value is None:
+            first_value = f"tab-{idx}"
+
+    if not tabs:
+        return html.Div("No figures available yet. Run the analysis to generate outputs.")
+
+    return dcc.Tabs(children=tabs, value=first_value)
+
+
 def aggregate_rankings(session_dir: Path) -> Tuple[List[str], List[Dict[str, str]]]:
     ranking_files = sorted(session_dir.glob("*_ranking.csv"))
     if not ranking_files:
@@ -265,8 +431,9 @@ def aggregate_rankings(session_dir: Path) -> Tuple[List[str], List[Dict[str, str
                     rank = float(val)
                 except ValueError:
                     continue
-                metric_ranks.setdefault(metric_name, {})[method] = rank
-                method_ranks[method].append(rank)
+                disp = method_formal_name(method)
+                metric_ranks.setdefault(metric_name, {})[disp] = rank
+                method_ranks[disp].append(rank)
 
     if not metric_ranks:
         return [], []

@@ -1,5 +1,5 @@
 # =========================
-# NMDS figures (Aitchison on CLR; Bray–Curtis on TSS)
+# NMDS figures (Aitchison on CLR; Bray-Curtis on TSS)
 # =========================
 
 # ==== Libraries ====
@@ -8,6 +8,18 @@ suppressPackageStartupMessages({
   library(readr)
   library(dplyr)
   library(patchwork)   # layouts + legend collection
+
+# Map method codes to short labels for figures
+method_short_label <- function(x) {
+  map <- c(
+    qn = "QN", bmc = "BMC", limma = "Limma", conqur = "ConQuR",
+    plsda = "PLSDA-batch", combat = "ComBat", fsqn = "FSQN", mmuphin = "MMUPHin",
+    ruv = "RUV-III-NB", metadict = "MetaDICT", svd = "SVD", pn = "PN",
+    fabatch = "FAbatch", combatseq = "ComBat-seq", debias = "DEBIAS-M"
+  )
+  sapply(x, function(v){ lv <- tolower(v); if (lv %in% names(map)) map[[lv]] else v })
+}
+
   library(rlang)
   library(vegan)       # distances + NMDS
 })
@@ -74,6 +86,10 @@ if (!dir.exists(output_folder)) dir.create(output_folder, recursive = TRUE)
 
 metadata <- read_csv(file.path(output_folder, "metadata.csv"), show_col_types = FALSE) |>
   mutate(sample_id = as.character(sample_id))
+}
+if (!("batch_id" %in% names(metadata)) && ("batch_id" %in% names(metadata))) {
+  metadata$batch_id <- metadata$batch_id
+}
 
 # ---- Find normalized files ----
 clr_paths <- list.files(output_folder, pattern = "^normalized_.*_clr\\.csv$", full.names = TRUE)
@@ -87,8 +103,8 @@ if (!length(clr_paths) && !length(tss_paths)) {
 }
 
 name_from <- function(paths, suffix) gsub(paste0("^normalized_|_", suffix, "\\.csv$"), "", basename(paths))
-file_list_clr <- setNames(clr_paths, if (length(clr_paths)) name_from(clr_paths, "clr") else character())
-file_list_tss <- setNames(tss_paths, if (length(tss_paths)) name_from(tss_paths, "tss") else character())
+file_list_clr <- setNames(clr_paths, method_short_label(name_from(clr_paths, "clr")))
+file_list_tss <- setNames(tss_paths, method_short_label(name_from(tss_paths, "tss")))
 
 # Include raw_clr.csv / raw_tss.csv as "Before correction" if present
 raw_clr_fp <- file.path(output_folder, "raw_clr.csv")
@@ -101,7 +117,7 @@ if (!length(file_list_clr) && !length(file_list_tss)) {
 }
 
 # ==== NMDS frames: Aitchison on CLR ====
-compute_nmds_frames_aitch <- function(df, metadata, model.vars = c("batchid","phenotype"), k = 2) {
+compute_nmds_frames_aitch <- function(df, metadata, model.vars = c("batch_id","phenotype"), k = 2) {
   if (!"sample_id" %in% names(df)) {
     if (nrow(df) == nrow(metadata)) df$sample_id <- metadata$sample_id
     else stop("Input lacks 'sample_id' and row count != metadata.")
@@ -129,8 +145,8 @@ compute_nmds_frames_aitch <- function(df, metadata, model.vars = c("batchid","ph
   list(plot.df = plot.df, stress = fit$stress, used.vars = present)
 }
 
-# ==== NMDS frames: Bray–Curtis on TSS ====
-compute_nmds_frames_bray <- function(df, metadata, model.vars = c("batchid","phenotype"), k = 2) {
+# ==== NMDS frames: Bray-Curtis on TSS ====
+compute_nmds_frames_bray <- function(df, metadata, model.vars = c("batch_id","phenotype"), k = 2) {
   if (!"sample_id" %in% names(df)) {
     if (nrow(df) == nrow(metadata)) df$sample_id <- metadata$sample_id
     else stop("Input lacks 'sample_id' and row count != metadata.")
@@ -180,7 +196,7 @@ nmds_panel <- function(plot.df, stress, model.vars, axes = c(1,2),
   if (!is.null(xlim_override)) xlim <- xlim_override
   if (!is.null(ylim_override)) ylim <- ylim_override
   
-  title_text <- if (is.null(label)) sprintf("NMDS (stress=%.3f)", stress) else sprintf("%s — NMDS (stress=%.3f)", label, stress)
+  title_text <- if (is.null(label)) sprintf("NMDS (stress=%.3f)", stress) else sprintf("%s - NMDS (stress=%.3f)", label, stress)
   
   p <- ggplot(plot.df, aes(x = !!sym(xcol), y = !!sym(ycol), colour = !!sym(var.color))) +
     {
@@ -223,7 +239,7 @@ nmds_panel <- function(plot.df, stress, model.vars, axes = c(1,2),
 }
 
 # ==== Params ====
-batch_var  <- "batchid"
+batch_var  <- "batch_id"
 shape_var  <- "phenotype"
 model_vars <- if (is.na(shape_var)) c(batch_var) else c(batch_var, shape_var)
 axes_to_plot <- c(1, 2)
@@ -231,7 +247,7 @@ ncol_grid <- 2
 SYMMETRIC_AXES <- FALSE  # set TRUE to force symmetry about 0 (optional)
 
 # =========================
-# Set 1: NMDS — Aitchison (CLR)
+# Set 1: NMDS - Aitchison (CLR)
 # =========================
 message("NMDS (Aitchison on CLR)")
 
@@ -287,9 +303,9 @@ ggsave(file.path(output_folder, "nmds_aitchison.tif"),
        plot = combined_clr, width = w_clr, height = h_clr, dpi = 300, compression = "lzw")
 
 # =========================
-# Set 2: NMDS — Bray–Curtis (TSS)
+# Set 2: NMDS - Bray-Curtis (TSS)
 # =========================
-message("NMDS (Bray–Curtis on TSS)")
+message("NMDS (Bray-Curtis on TSS)")
 
 frames_cache_tss <- list(); all_x <- NULL; all_y <- NULL
 for (nm in names(file_list_tss)) {
@@ -347,7 +363,7 @@ ggsave(file.path(output_folder, "nmds_braycurtis.tif"),
 # =========================
 
 # --- helpers ---
-compute_centroids_nmds <- function(scores, batch_var = "batchid") {
+compute_centroids_nmds <- function(scores, batch_var = "batch_id") {
   scores %>%
     dplyr::group_by(!!rlang::sym(batch_var)) %>%
     dplyr::summarise(NMDS1 = mean(NMDS1), NMDS2 = mean(NMDS2), .groups = "drop")
@@ -356,7 +372,7 @@ compute_centroid_distances <- function(centroids) {
   if (nrow(centroids) < 2) return(NA_real_)
   as.numeric(mean(dist(centroids[, c("NMDS1", "NMDS2")], method = "euclidean")))
 }
-compute_within_dispersion_nmds <- function(scores, batch_var = "batchid") {
+compute_within_dispersion_nmds <- function(scores, batch_var = "batch_id") {
   if (!all(c("NMDS1","NMDS2", batch_var) %in% names(scores))) return(NA_real_)
   levs <- levels(scores[[batch_var]]); if (is.null(levs)) levs <- unique(scores[[batch_var]])
   ws <- c(); ns <- c()
@@ -371,12 +387,11 @@ compute_within_dispersion_nmds <- function(scores, batch_var = "batchid") {
   stats::weighted.mean(ws, w = ns)
 }
 
-# Map “smaller is better” batch distance + “smaller is better” stress into [0,1] scores,
 # then combine via geometric mean (higher = better).
 nmds_metric_score <- function(batch_distance, stress, stress_cap = 0.30) {
   if (is.na(batch_distance) || is.na(stress)) return(NA_real_)
-  S_batch  <- 1 / (1 + batch_distance)                           # ↓distance → ↑score
-  S_stress <- pmax(0, 1 - pmin(stress, stress_cap) / stress_cap) # stress≤cap → in (0,1], >cap → 0
+  S_batch  <- 1 / (1 + batch_distance)                           
+  S_stress <- pmax(0, 1 - pmin(stress, stress_cap) / stress_cap) 
   sqrt(S_batch * S_stress)
 }
 
@@ -395,10 +410,10 @@ if (only_baseline) {
     md <- metadata[match(fr$plot.df$sample_id, metadata$sample_id), , drop = FALSE]
     scores <- fr$plot.df %>%
       dplyr::select(sample_id, NMDS1, NMDS2) %>%
-      dplyr::mutate(batchid = factor(md$batchid))
-    cents <- compute_centroids_nmds(scores, "batchid")
+      dplyr::mutate(batch_id = factor(md$batch_id))
+    cents <- compute_centroids_nmds(scores, "batch_id")
     D_between <- compute_centroid_distances(cents)
-    W_within  <- compute_within_dispersion_nmds(scores, "batchid")
+    W_within  <- compute_within_dispersion_nmds(scores, "batch_id")
     stress    <- fr$stress
     score     <- nmds_metric_score(D_between, stress)
     needs_correction <- is.finite(D_between) && is.finite(W_within) && (D_between > W_within)
@@ -419,17 +434,17 @@ if (only_baseline) {
     md <- metadata[match(fr$plot.df$sample_id, metadata$sample_id), , drop = FALSE]
     scores <- fr$plot.df %>%
       dplyr::select(sample_id, NMDS1, NMDS2) %>%
-      dplyr::mutate(batchid = factor(md$batchid))
-    cents <- compute_centroids_nmds(scores, "batchid")
+      dplyr::mutate(batch_id = factor(md$batch_id))
+    cents <- compute_centroids_nmds(scores, "batch_id")
     D_between <- compute_centroid_distances(cents)
-    W_within  <- compute_within_dispersion_nmds(scores, "batchid")
+    W_within  <- compute_within_dispersion_nmds(scores, "batch_id")
     stress    <- fr$stress
     score     <- nmds_metric_score(D_between, stress)
     needs_correction <- is.finite(D_between) && is.finite(W_within) && (D_between > W_within)
     
     assess_rows[["TSS"]] <- tibble::tibble(
       Method            = "Before correction",
-      Geometry          = "Bray–Curtis (TSS)",
+      Geometry          = "Bray-Curtis (TSS)",
       Batch_Distance    = D_between,
       Within_Dispersion = W_within,
       NMDS_Stress       = stress,
@@ -464,9 +479,9 @@ if (only_baseline) {
   readr::write_csv(assess_df, file.path(output_folder, "nmds_raw_assessment.csv"))
   
   message(if (isTRUE(needs_corr_any)) {
-    "Assessment: Batch separation exceeds within-batch spread in at least one geometry — correction recommended."
+    "Assessment: Batch separation exceeds within-batch spread in at least one geometry - correction recommended."
   } else {
-    "Assessment: Batch separation does not exceed within-batch spread — correction may not be necessary."
+    "Assessment: Batch separation does not exceed within-batch spread - correction may not be necessary."
   })
   
 } else {
@@ -490,22 +505,22 @@ if (only_baseline) {
       md_a <- metadata[match(fr_a$plot.df$sample_id, metadata$sample_id), , drop = FALSE]
       scores_a <- fr_a$plot.df %>%
         dplyr::select(sample_id, NMDS1, NMDS2) %>%
-        dplyr::mutate(batchid = factor(md_a$batchid))
-      cents_a <- compute_centroids_nmds(scores_a, "batchid")
+        dplyr::mutate(batch_id = factor(md_a$batch_id))
+      cents_a <- compute_centroids_nmds(scores_a, "batch_id")
       D_a <- compute_centroid_distances(cents_a)
       stress_a <- fr_a$stress
       S_a <- nmds_metric_score(D_a, stress_a)
     }
     
-    # Bray–Curtis (TSS NMDS)
+    # Bray-Curtis (TSS NMDS)
     D_b <- NA_real_; S_b <- NA_real_; stress_b <- NA_real_
     if (m %in% methods_tss) {
       fr_b <- frames_cache_tss[[m]]
       md_b <- metadata[match(fr_b$plot.df$sample_id, metadata$sample_id), , drop = FALSE]
       scores_b <- fr_b$plot.df %>%
         dplyr::select(sample_id, NMDS1, NMDS2) %>%
-        dplyr::mutate(batchid = factor(md_b$batchid))
-      cents_b <- compute_centroids_nmds(scores_b, "batchid")
+        dplyr::mutate(batch_id = factor(md_b$batch_id))
+      cents_b <- compute_centroids_nmds(scores_b, "batch_id")
       D_b <- compute_centroid_distances(cents_b)
       stress_b <- fr_b$stress
       S_b <- nmds_metric_score(D_b, stress_b)

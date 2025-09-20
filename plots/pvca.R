@@ -1,4 +1,4 @@
-# ================= PVCA (Principal Variance Component Analysis) — mbec-style, pRDA table style =================
+# ================= PVCA (Principal Variance Component Analysis) - mbec-style, pRDA table style =================
 suppressPackageStartupMessages({
   library(ggplot2)
   library(readr)
@@ -8,6 +8,18 @@ suppressPackageStartupMessages({
   library(gridExtra)  # tableGrob + arrangeGrob
   library(grid)       # rectGrob, segmentsGrob
   library(gtable)     # add borders/lines to table grob
+
+# Map method codes to short labels for figures
+method_short_label <- function(x) {
+  map <- c(
+    qn = "QN", bmc = "BMC", limma = "Limma", conqur = "ConQuR",
+    plsda = "PLSDA-batch", combat = "ComBat", fsqn = "FSQN", mmuphin = "MMUPHin",
+    ruv = "RUV-III-NB", metadict = "MetaDICT", svd = "SVD", pn = "PN",
+    fabatch = "FAbatch", combatseq = "ComBat-seq", debias = "DEBIAS-M"
+  )
+  sapply(x, function(v){ lv <- tolower(v); if (lv %in% names(map)) map[[lv]] else v })
+}
+
 })
 
 if (!requireNamespace("lme4", quietly = TRUE)) {
@@ -26,11 +38,11 @@ pvca_zero <- function() {
 
 # --------- Core PVCA (mbec approach, robust) ---------
 # Steps:
-# 1) Center features (no scaling), compute sample–sample correlation.
+# 1) Center features (no scaling), compute sample-sample correlation.
 # 2) Eigen-decompose; choose PCs: min 3, max 10, reaching cumvar_threshold.
 # 3) For each selected PC: LMM random effects (batch, treat, interaction).
 # 4) Standardize per-PC variances, weight by PC eigenvalue share, renormalize.
-compute_pvca <- function(df, meta, batch_col = "batchid", treat_col = "phenotype",
+compute_pvca <- function(df, meta, batch_col = "batch_id", treat_col = "phenotype",
                          cumvar_threshold = 0.60, scale_features = TRUE,  # kept for API compatibility
                          na_action = stats::na.omit, quiet = TRUE) {
   
@@ -66,7 +78,7 @@ compute_pvca <- function(df, meta, batch_col = "batchid", treat_col = "phenotype
   s.names <- dfx$sample_id
   rownames(X) <- s.names
   
-  # center-by-feature (no scaling), sample–sample correlation
+  # center-by-feature (no scaling), sample-sample correlation
   Xc <- sweep(X, 2, colMeans(X, na.rm = TRUE), "-")
   Xt <- t(Xc)
   if (ncol(Xt) < 3) return(pvca_zero())
@@ -170,7 +182,7 @@ compute_pvca <- function(df, meta, batch_col = "batchid", treat_col = "phenotype
     }
   }
   
-  # aggregate & renormalize — PRESERVE NAMES!
+  # aggregate & renormalize - PRESERVE NAMES!
   parts <- c(Treatment = w_treat, Intersection = w_inter, Batch = w_batch, Residuals = w_res)
   parts[!is.finite(parts)] <- 0
   nm <- names(parts)
@@ -205,6 +217,10 @@ if (!dir.exists(output_folder)) dir.create(output_folder, recursive = TRUE)
 
 metadata <- readr::read_csv(file.path(output_folder, "metadata.csv"), show_col_types = FALSE) %>%
   dplyr::mutate(sample_id = as.character(sample_id))
+}
+if (!("batch_id" %in% names(metadata)) && ("batch_id" %in% names(metadata))) {
+  metadata$batch_id <- metadata$batch_id
+}
 
 # --------- Collect CLR files ---------
 clr_paths <- list.files(output_folder, pattern = "^normalized_.*_clr\\.csv$", full.names = TRUE)
@@ -218,13 +234,13 @@ if (!length(clr_paths)) stop("No CLR matrices found (expected 'raw_clr.csv' or '
 method_names <- ifelse(basename(clr_paths) == "raw_clr.csv",
                        "Before correction",
                        gsub("^normalized_|_clr\\.csv$", "", basename(clr_paths)))
-file_list <- setNames(clr_paths, method_names)
+file_list <- setNames(clr_paths, method_short_label(method_names))
 
 pvca_list <- lapply(names(file_list), function(nm) {
   message("Computing PVCA: ", nm)
   df <- readr::read_csv(file_list[[nm]], show_col_types = FALSE)
   out <- compute_pvca(df, metadata,
-                      batch_col = "batchid",
+                      batch_col = "batch_id",
                       treat_col = "phenotype",
                       cumvar_threshold = 0.60,
                       scale_features = TRUE,
@@ -378,12 +394,12 @@ if (only_baseline) {
   readr::write_csv(base_df, file.path(output_folder, "PVCA_raw_assessment.csv"))
   
   if (any(base_df$Needs_Correction, na.rm = TRUE)) {
-    message("PVCA baseline: Batch fraction ≥ Treatment (and/or Batch > 0.05) — correction recommended.")
+    message("PVCA baseline: Batch fraction ≥ Treatment (and/or Batch > 0.05) - correction recommended.")
   } else {
-    message("PVCA baseline: Batch fraction modest relative to Treatment — correction may not be necessary.")
+    message("PVCA baseline: Batch fraction modest relative to Treatment - correction may not be necessary.")
   }
 } else {
   ranked_pvca_methods <- rank_pvca_methods(pvca_plot_df)
   print(ranked_pvca_methods)
-  readr::write_csv(ranked_pvca_methods, file.path(output_folder, "pvca_ranking.csv"))
+readr::write_csv(ranked_pvca_methods, file.path(output_folder, "PVCA_ranking.csv"))
 }

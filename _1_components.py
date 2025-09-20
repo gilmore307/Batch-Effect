@@ -60,11 +60,13 @@ def build_navbar(active_path: str) -> dbc.Navbar:
 
     for path, label in NAV_LINKS:
         is_active = (path == active_path)
+        # Intercept Upload clicks via callback (no href) to confirm restart
+        href = None if path == "/upload" else path
         items.append(
             dbc.Button(
                 label,
                 id=NAV_ID_MAP[path],
-                href=path,
+                href=href,
                 color="light" if is_active else "secondary",
                 outline=not is_active,
                 className="me-2 mb-2",

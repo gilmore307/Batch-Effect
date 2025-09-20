@@ -1,4 +1,4 @@
-batchid,sample_id,age,gender,BMI,phenotype
+batch_id,sample_id,age,gender,BMI,phenotype
 0,SID31159,73,1,17.99,1
 0,SID31223,65,0,23.31,0
 0,SID31865,55,0,23.34,1

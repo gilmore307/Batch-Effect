@@ -10,7 +10,29 @@ suppressPackageStartupMessages({
 # ---- helpers ----
 mbecUpperCase <- function(x) paste0(toupper(substr(x, 1, 1)), substr(x, 2, nchar(x)))
 
-guess_shape_var <- function(meta, batch_col = "batchid") {
+# Map method codes from filenames to short display labels for figures
+method_short_label <- function(x) {
+  map <- c(
+    qn = "QN",
+    bmc = "BMC",
+    limma = "Limma",
+    conqur = "ConQuR",
+    plsda = "PLSDA-batch",
+    combat = "ComBat",
+    fsqn = "FSQN",
+    mmuphin = "MMUPHin",
+    ruv = "RUV-III-NB",
+    metadict = "MetaDICT",
+    svd = "SVD",
+    pn = "PN",
+    fabatch = "FAbatch",
+    combatseq = "ComBat-seq",
+    debias = "DEBIAS-M"
+  )
+  sapply(x, function(v){ lv <- tolower(v); if (lv %in% names(map)) map[[lv]] else v })
+}
+
+guess_shape_var <- function(meta, batch_col = "batch_id") {
   cand <- c("group","phenotype","condition","status","case_control","class","disease","label")
   hit <- cand[cand %in% names(meta)]
   if (length(hit)) return(hit[1])
@@ -73,11 +95,11 @@ if (!length(clr_paths)) stop("No CLR matrices found (expected 'raw_clr.csv' or '
 method_names <- ifelse(basename(clr_paths) == "raw_clr.csv",
                        "Before correction",
                        gsub("^normalized_|_clr\\.csv$", "", basename(clr_paths)))
-file_list <- setNames(clr_paths, method_names)
+file_list <- setNames(clr_paths, method_short_label(method_names))
 
 # ==== build plot.df + metric.df like mbecPCA would ====
 # ensures consistent factor levels across panels so legend can be shared
-compute_pca_frames <- function(df, metadata, model.vars = c("batchid","group"), n_pcs = 5) {
+compute_pca_frames <- function(df, metadata, model.vars = c("batch_id","group"), n_pcs = 5) {
   if (!"sample_id" %in% names(df)) {
     if (nrow(df) == nrow(metadata)) df$sample_id <- metadata$sample_id
     else stop("Input lacks 'sample_id' and row count != metadata; can't align samples.")
@@ -260,7 +282,7 @@ CB
 }
 
 # ==== choose covariates (auto-detect shape var) ====
-batch_var  <- "batchid"
+batch_var  <- "batch_id"
 shape_var  <- guess_shape_var(metadata, batch_var)
 model_vars <- if (is.na(shape_var)) c(batch_var) else c(batch_var, shape_var)
 message(sprintf("Using color=%s%s",
@@ -326,7 +348,7 @@ ggsave(file.path(output_folder, "pca.tif"),
 # PCA ranking / assessment
 # =========================
 
-compute_centroids_pca <- function(scores, batch_var = "batchid") {
+compute_centroids_pca <- function(scores, batch_var = "batch_id") {
   scores %>%
     dplyr::group_by(!!rlang::sym(batch_var)) %>%
     dplyr::summarise(PC1 = mean(PC1), PC2 = mean(PC2), .groups = "drop")
@@ -336,7 +358,7 @@ compute_centroid_distances <- function(centroids) {
   as.numeric(mean(dist(centroids[, c("PC1","PC2")], method = "euclidean")))
 }
 # Weighted average within-batch dispersion on PC1–PC2 (higher = batches internally more spread)
-compute_within_dispersion <- function(scores, batch_var = "batchid") {
+compute_within_dispersion <- function(scores, batch_var = "batch_id") {
   if (!all(c("PC1","PC2", batch_var) %in% names(scores))) return(NA_real_)
   levs <- levels(scores[[batch_var]])
   if (is.null(levs)) levs <- unique(scores[[batch_var]])
@@ -370,11 +392,11 @@ if (only_baseline) {
   md <- metadata[match(fr$plot.df$sample_id, metadata$sample_id), , drop = FALSE]
   scores <- fr$plot.df %>%
     dplyr::select(sample_id, PC1, PC2) %>%
-    dplyr::mutate(batchid = factor(md$batchid))
-  
-  cents <- compute_centroids_pca(scores, "batchid")
+    dplyr::mutate(batch_id = factor(md$batch_id))
+
+  cents <- compute_centroids_pca(scores, "batch_id")
   D_between <- compute_centroid_distances(cents)
-  W_within  <- compute_within_dispersion(scores, "batchid")
+  W_within  <- compute_within_dispersion(scores, "batch_id")
   
   ve <- fr$metric.df$var.explained
   coverage2 <- sum(ve[1:min(2, length(ve))], na.rm = TRUE) / 100
@@ -416,8 +438,8 @@ if (only_baseline) {
     md <- metadata[match(fr$plot.df$sample_id, metadata$sample_id), , drop = FALSE]
     scores <- fr$plot.df %>%
       dplyr::select(sample_id, PC1, PC2) %>%
-      dplyr::mutate(batchid = factor(md$batchid))
-    cents <- compute_centroids_pca(scores, "batchid")
+      dplyr::mutate(batch_id = factor(md$batch_id))
+    cents <- compute_centroids_pca(scores, "batch_id")
     D <- compute_centroid_distances(cents)
     ve <- fr$metric.df$var.explained
     cov2 <- sum(ve[1:min(2, length(ve))], na.rm = TRUE) / 100

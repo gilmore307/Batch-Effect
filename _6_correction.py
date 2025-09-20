@@ -7,13 +7,13 @@ from dash.dependencies import Input, Output, State
 import dash
 import dash_bootstrap_components as dbc
 
-from _1_components import build_navbar, logger_box
+from _1_components import build_navbar
 from _2_utils import get_session_dir, run_methods, SUPPORTED_METHODS, DEFAULT_METHODS
 
 
 def correction_layout(active_path: str):
     checklist_options = [
-        {"label": f"{name} - {desc}", "value": name} for name, desc in SUPPORTED_METHODS
+        {"label": display, "value": code} for code, display in SUPPORTED_METHODS
     ]
     return html.Div(
         [
@@ -21,7 +21,6 @@ def correction_layout(active_path: str):
             dbc.Container(
                 dbc.Row(
                     [
-                        logger_box("correction-log", "Correction log"),
                         dbc.Col(
                             [
                                 html.H2("Run batch correction"),
@@ -55,8 +54,6 @@ def register_correction_callbacks(app):
         return selected or []
 
     @app.callback(
-        Output("correction-log", "children"),
-        Output("correction-log", "is_open"),
         Output("correction-complete", "data"),
         Input("run-correction", "n_clicks"),
         State("selected-methods", "data"),
@@ -67,13 +64,13 @@ def register_correction_callbacks(app):
         if not n_clicks:
             raise dash.exceptions.PreventUpdate
         if not session_id:
-            return "Session not initialised.", True, False
+            return False
         session_dir = get_session_dir(session_id)
         if not (session_dir / "raw.csv").exists() or not (session_dir / "metadata.csv").exists():
-            return "Upload both raw.csv and metadata.csv before running correction.", True, False
+            return False
         methods = methods or []
         if not methods:
-            return "Select at least one method before running the correction.", True, False
+            return False
 
         success, log = run_methods(session_dir, methods)
-        return log, True, bool(success)
+        return bool(success)

@@ -59,6 +59,27 @@ def serve_layout() -> html.Div:
 
             # Page mount
             html.Div(id="page-content"),
+
+            # Confirm restart modal (shown when clicking Upload from other pages)
+            dbc.Modal(
+                [
+                    dbc.ModalHeader(dbc.ModalTitle("Restart session?")),
+                    dbc.ModalBody(
+                        "Starting a new session clears your current uploads and results. Continue?"
+                    ),
+                    dbc.ModalFooter(
+                        [
+                            dbc.Button("Cancel", id="confirm-restart-no", color="secondary", className="me-2"),
+                            dbc.Button("Restart", id="confirm-restart-yes", color="danger"),
+                        ]
+                    ),
+                ],
+                id="confirm-restart-modal",
+                is_open=False,
+                backdrop="static",
+                keyboard=False,
+                centered=True,
+            ),
         ]
     )
 
@@ -117,6 +138,75 @@ def toggle_pre_assessment_button(upload_complete: bool) -> bool:
 def toggle_correction_button(upload_complete: bool) -> bool:
     return not bool(upload_complete)
 
+
+# ---- Intercept Upload nav to confirm restart ----
+@app.callback(
+    Output("confirm-restart-modal", "is_open"),
+    Input(NAV_ID_MAP["/upload"], "n_clicks"),
+    State("page-url", "pathname"),
+    prevent_initial_call=True,
+)
+def open_restart_modal(n_clicks: int, pathname: str) -> bool:
+    if not n_clicks:
+        raise dash.exceptions.PreventUpdate
+    # Only ask when not already on the upload page
+    if pathname == "/upload":
+        raise dash.exceptions.PreventUpdate
+    return True
+
+
+@app.callback(
+    Output("session-id", "data"),
+    Output("selected-methods", "data"),
+    Output("upload-complete", "data"),
+    Output("pre-complete", "data"),
+    Output("correction-complete", "data"),
+    Output("post-complete", "data"),
+    Output("page-url", "pathname"),
+    Output("confirm-restart-modal", "is_open"),
+    Input("confirm-restart-yes", "n_clicks"),
+    Input("confirm-restart-no", "n_clicks"),
+    State("session-id", "data"),
+    prevent_initial_call=True,
+)
+def handle_restart(confirm_yes: int, confirm_no: int, current_session: str):
+    ctx = dash.callback_context
+    if not ctx.triggered:
+        raise dash.exceptions.PreventUpdate
+    trigger_id = ctx.triggered[0]["prop_id"].split(".")[0]
+    if trigger_id == "confirm-restart-yes":
+        # Delete previous session folder if present
+        try:
+            if current_session:
+                old_dir = get_session_dir(current_session)
+                if old_dir.exists():
+                    shutil.rmtree(old_dir, ignore_errors=True)
+        except Exception:
+            # Ignore cleanup errors; proceed with new session
+            pass
+        new_session = str(uuid.uuid4())
+        return (
+            new_session,  # session-id
+            [],           # selected-methods
+            False,        # upload-complete
+            False,        # pre-complete
+            False,        # correction-complete
+            False,        # post-complete
+            "/upload",   # navigate to upload
+            False,        # close modal
+        )
+    else:
+        # Cancel: keep everything, just close modal
+        return (
+            dash.no_update,
+            dash.no_update,
+            dash.no_update,
+            dash.no_update,
+            dash.no_update,
+            dash.no_update,
+            dash.no_update,
+            False,
+        )
 
 # ---- Download results (ZIP session dir) ----
 @app.callback(

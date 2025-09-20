@@ -5,8 +5,18 @@ suppressPackageStartupMessages({
   library(dplyr)
   library(patchwork)  # layouts + legend collection
   library(rlang)
-  library(vegan)      # Bray–Curtis
+  library(vegan)      # Bray-Curtis
 })
+# Map method codes to short labels for figures
+method_short_label <- function(x) {
+  map <- c(
+    qn = "QN", bmc = "BMC", limma = "Limma", conqur = "ConQuR",
+    plsda = "PLSDA-batch", combat = "ComBat", fsqn = "FSQN", mmuphin = "MMUPHin",
+    ruv = "RUV-III-NB", metadict = "MetaDICT", svd = "SVD", pn = "PN",
+    fabatch = "FAbatch", combatseq = "ComBat-seq", debias = "DEBIAS-M"
+  )
+  sapply(x, function(v){ lv <- tolower(v); if (lv %in% names(map)) map[[lv]] else v })
+}
 
 # ==== Helpers (robust ranges/padding) ====
 safe_range <- function(v) {
@@ -94,6 +104,10 @@ if (!dir.exists(output_folder)) dir.create(output_folder, recursive = TRUE)
 
 metadata <- read_csv(file.path(output_folder, "metadata.csv"), show_col_types = FALSE) |>
   mutate(sample_id = as.character(sample_id))
+}
+if (!("batch_id" %in% names(metadata)) && ("batch_id" %in% names(metadata))) {
+  metadata$batch_id <- metadata$batch_id
+}
 
 # ---- Find normalized files ----
 clr_paths <- list.files(output_folder, pattern = "^normalized_.*_clr\\.csv$", full.names = TRUE)
@@ -107,8 +121,8 @@ if (!length(clr_paths) && !length(tss_paths)) {
 }
 
 name_from <- function(paths, suffix) gsub(paste0("^normalized_|_", suffix, "\\.csv$"), "", basename(paths))
-file_list_clr <- setNames(clr_paths, if (length(clr_paths)) name_from(clr_paths, "clr") else character())
-file_list_tss <- setNames(tss_paths, if (length(tss_paths)) name_from(tss_paths, "tss") else character())
+file_list_clr <- setNames(clr_paths, if (length(clr_paths)) method_short_label(name_from(clr_paths, "clr")) else character())
+file_list_tss <- setNames(tss_paths, if (length(tss_paths)) method_short_label(name_from(tss_paths, "tss")) else character())
 
 # Include raw_clr.csv / raw_tss.csv as "Before correction" if present
 raw_clr_fp <- file.path(output_folder, "raw_clr.csv")
@@ -121,7 +135,7 @@ if (!length(file_list_clr) && !length(file_list_tss)) {
 }
 
 # ==== PCoA frames (Aitchison on CLR) ====
-compute_pcoa_frames_aitch <- function(df, metadata, model.vars = c("batchid","phenotype"),
+compute_pcoa_frames_aitch <- function(df, metadata, model.vars = c("batch_id","phenotype"),
                                       n_axes = 5) {
   if (!"sample_id" %in% names(df)) {
     if (nrow(df) == nrow(metadata)) df$sample_id <- metadata$sample_id
@@ -173,7 +187,7 @@ compute_pcoa_frames_aitch <- function(df, metadata, model.vars = c("batchid","ph
 }
 
 # ==== PCoA frames (Bray–Curtis on TSS) ====
-compute_pcoa_frames_bray <- function(df, metadata, model.vars = c("batchid","phenotype"),
+compute_pcoa_frames_bray <- function(df, metadata, model.vars = c("batch_id","phenotype"),
                                      n_axes = 5) {
   if (!"sample_id" %in% names(df)) {
     if (nrow(df) == nrow(metadata)) df$sample_id <- metadata$sample_id
@@ -353,7 +367,7 @@ CB
 }
 
 # ==== Params ====
-batch_var  <- "batchid"
+batch_var  <- "batch_id"
 shape_var  <- "phenotype"
 model_vars <- if (is.na(shape_var)) c(batch_var) else c(batch_var, shape_var)
 axes_to_plot <- c(1, 2)
@@ -514,7 +528,7 @@ ggsave(file.path(output_folder, "pcoa_braycurtis.tif"),
 # Unified PCoA ranking (Aitchison + Bray combined)
 # =========================
 
-compute_centroids_pcoa <- function(scores, batch_var = "batchid") {
+compute_centroids_pcoa <- function(scores, batch_var = "batch_id") {
   scores %>%
     dplyr::group_by(!!rlang::sym(batch_var)) %>%
     dplyr::summarise(PCo1 = mean(PCo1), PCo2 = mean(PCo2), .groups = "drop")
@@ -523,8 +537,8 @@ compute_centroid_distances <- function(centroids) {
   if (nrow(centroids) < 2) return(NA_real_)
   as.numeric(mean(dist(centroids[, c("PCo1", "PCo2")], method = "euclidean")))
 }
-# Weighted mean within-batch pairwise distance on PCo1–PCo2
-compute_within_dispersion_pcoa <- function(scores, batch_var = "batchid") {
+# Weighted mean within-batch pairwise distance on PCo1-PCo2
+compute_within_dispersion_pcoa <- function(scores, batch_var = "batch_id") {
   if (!all(c("PCo1","PCo2", batch_var) %in% names(scores))) return(NA_real_)
   levs <- levels(scores[[batch_var]])
   if (is.null(levs)) levs <- unique(scores[[batch_var]])
@@ -561,10 +575,10 @@ if (only_baseline) {
     md <- metadata[match(fr$plot.df$sample_id, metadata$sample_id), , drop = FALSE]
     scores <- fr$plot.df %>%
       dplyr::select(sample_id, PCo1, PCo2) %>%
-      dplyr::mutate(batchid = factor(md$batchid))
-    cents <- compute_centroids_pcoa(scores, "batchid")
+      dplyr::mutate(batch_id = factor(md$batch_id))
+    cents <- compute_centroids_pcoa(scores, "batch_id")
     D_between <- compute_centroid_distances(cents)
-    W_within  <- compute_within_dispersion_pcoa(scores, "batchid")
+    W_within  <- compute_within_dispersion_pcoa(scores, "batch_id")
     ve <- fr$metric.df$var.explained
     coverage2 <- sum(ve[1:min(2, length(ve))], na.rm = TRUE) / 100
     score <- pcoa_metric_score(D_between, coverage2)
@@ -586,10 +600,10 @@ if (only_baseline) {
     md <- metadata[match(fr$plot.df$sample_id, metadata$sample_id), , drop = FALSE]
     scores <- fr$plot.df %>%
       dplyr::select(sample_id, PCo1, PCo2) %>%
-      dplyr::mutate(batchid = factor(md$batchid))
-    cents <- compute_centroids_pcoa(scores, "batchid")
+      dplyr::mutate(batch_id = factor(md$batch_id))
+    cents <- compute_centroids_pcoa(scores, "batch_id")
     D_between <- compute_centroid_distances(cents)
-    W_within  <- compute_within_dispersion_pcoa(scores, "batchid")
+    W_within  <- compute_within_dispersion_pcoa(scores, "batch_id")
     ve <- fr$metric.df$var.explained
     coverage2 <- sum(ve[1:min(2, length(ve))], na.rm = TRUE) / 100
     score <- pcoa_metric_score(D_between, coverage2)
@@ -632,9 +646,9 @@ if (only_baseline) {
   readr::write_csv(assess_df, file.path(output_folder, "pcoa_raw_assessment.csv"))
   
   message(if (isTRUE(needs_corr_any)) {
-    "Assessment: Batch separation exceeds within-batch spread in at least one geometry — correction recommended."
+    "Assessment: Batch separation exceeds within-batch spread in at least one geometry - correction recommended."
   } else {
-    "Assessment: Batch separation does not exceed within-batch spread — correction may not be necessary."
+    "Assessment: Batch separation does not exceed within-batch spread - correction may not be necessary."
   })
   
 } else {
@@ -658,8 +672,8 @@ if (only_baseline) {
       md_a <- metadata[match(fr_a$plot.df$sample_id, metadata$sample_id), , drop = FALSE]
       scores_a <- fr_a$plot.df %>%
         dplyr::select(sample_id, PCo1, PCo2) %>%
-        dplyr::mutate(batchid = factor(md_a$batchid))
-      cents_a <- compute_centroids_pcoa(scores_a, "batchid")
+        dplyr::mutate(batch_id = factor(md_a$batch_id))
+      cents_a <- compute_centroids_pcoa(scores_a, "batch_id")
       D_a <- compute_centroid_distances(cents_a)
       ve_a <- fr_a$metric.df$var.explained
       Cov_a <- sum(ve_a[1:min(2, length(ve_a))], na.rm = TRUE) / 100
@@ -673,8 +687,8 @@ if (only_baseline) {
       md_b <- metadata[match(fr_b$plot.df$sample_id, metadata$sample_id), , drop = FALSE]
       scores_b <- fr_b$plot.df %>%
         dplyr::select(sample_id, PCo1, PCo2) %>%
-        dplyr::mutate(batchid = factor(md_b$batchid))
-      cents_b <- compute_centroids_pcoa(scores_b, "batchid")
+        dplyr::mutate(batch_id = factor(md_b$batch_id))
+      cents_b <- compute_centroids_pcoa(scores_b, "batch_id")
       D_b <- compute_centroid_distances(cents_b)
       ve_b <- fr_b$metric.df$var.explained
       Cov_b <- sum(ve_b[1:min(2, length(ve_b))], na.rm = TRUE) / 100

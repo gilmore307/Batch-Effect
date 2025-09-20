@@ -8,6 +8,18 @@ suppressPackageStartupMessages({
 })
 
 # --------- Args / config ---------
+
+# Map method codes to short labels for figures
+method_short_label <- function(x) {
+  map <- c(
+    qn = "QN", bmc = "BMC", limma = "Limma", conqur = "ConQuR",
+    plsda = "PLSDA-batch", combat = "ComBat", fsqn = "FSQN", mmuphin = "MMUPHin",
+    ruv = "RUV-III-NB", metadict = "MetaDICT", svd = "SVD", pn = "PN",
+    fabatch = "FAbatch", combatseq = "ComBat-seq", debias = "DEBIAS-M"
+  )
+  sapply(x, function(v){ lv <- tolower(v); if (lv %in% names(map)) map[[lv]] else v })
+}
+
 args <- commandArgs(trailingOnly = TRUE)
 if (length(args) < 1) {
   args <- "output/example"  # default folder for quick runs
@@ -20,13 +32,13 @@ UMAP_NEIGHB   <- 15
 UMAP_MIN_DIST <- 0.3
 UMAP_METRIC   <- "euclidean"   # CLR -> Euclidean
 
-# EBM (kNN) params — "his method"
+# EBM (kNN) params - "his method"
 KNN_K         <- 50
 KNN_POOLS     <- 50
 KNN_PER_LABEL <- 100
 
 # EBM labels column (batch mixing uses batches)
-LABEL_COL <- "batchid"
+LABEL_COL <- "batch_id"
 
 # Baseline-only decision threshold (higher EBM = better mixing)
 EBM_THRESHOLD <- 0.35
@@ -218,13 +230,13 @@ if (only_baseline) {
     geom_text(aes(label = sprintf("%.3f", EBM)), vjust = -0.4, size = 3.2) +
     scale_y_continuous(limits = c(0, 1.05), expand = expansion(mult = c(0, 0.02))) +
     labs(
-      title = "Batch Entropy Mixing (kNN on UMAP) — baseline",
+      title = "Batch Entropy Mixing (kNN on UMAP) - baseline",
       subtitle = sprintf(
-        "Labels=%s • UMAP(metric=%s, n_neighbors=%d, min_dist=%.2f)",
+        "Labels=%s - UMAP(metric=%s, n_neighbors=%d, min_dist=%.2f)",
         LABEL_COL, pretty_metric(UMAP_METRIC), UMAP_NEIGHB, UMAP_MIN_DIST
       ),
       x = "Method",
-      y = "EBM (0–1, higher = better mixing)"
+      y = "EBM (0-1, higher = better mixing)"
     ) +
     theme_bw() +
     theme(
@@ -237,9 +249,9 @@ if (only_baseline) {
   ggsave(file.path(output_folder, "ebm.tif"), p_ebm, width = 6.5, height = 4.6, dpi = 300, compression = "lzw")
   
   if (isTRUE(base_row$Needs_Correction[1])) {
-    message(sprintf("Baseline EBM = %.3f < %.2f — correction recommended.", base_row$EBM[1], EBM_THRESHOLD))
+    message(sprintf("Baseline EBM = %.3f < %.2f - correction recommended.", base_row$EBM[1], EBM_THRESHOLD))
   } else {
-    message(sprintf("Baseline EBM = %.3f ≥ %.2f — correction may not be necessary.", base_row$EBM[1], EBM_THRESHOLD))
+    message(sprintf("Baseline EBM = %.3f >= %.2f - correction may not be necessary.", base_row$EBM[1], EBM_THRESHOLD))
   }
   
 } else {
@@ -256,11 +268,11 @@ if (only_baseline) {
     labs(
       title = "Batch Entropy Mixing (kNN on UMAP)",
       subtitle = sprintf(
-        "Labels=%s • UMAP(metric=%s, n_neighbors=%d, min_dist=%.2f)",
+        "Labels=%s - UMAP(metric=%s, n_neighbors=%d, min_dist=%.2f)",
         LABEL_COL, pretty_metric(UMAP_METRIC), UMAP_NEIGHB, UMAP_MIN_DIST
       ),
       x = "Method",
-      y = "EBM (0–1, higher = better mixing)"
+      y = "EBM (0-1, higher = better mixing)"
     ) +
     theme_bw() +
     theme(

@@ -8,6 +8,18 @@ suppressPackageStartupMessages({
   library(pROC)
 })
 
+
+# Map method codes to short labels for figures
+method_short_label <- function(x) {
+  map <- c(
+    qn = "QN", bmc = "BMC", limma = "Limma", conqur = "ConQuR",
+    plsda = "PLSDA-batch", combat = "ComBat", fsqn = "FSQN", mmuphin = "MMUPHin",
+    ruv = "RUV-III-NB", metadict = "MetaDICT", svd = "SVD", pn = "PN",
+    fabatch = "FAbatch", combatseq = "ComBat-seq", debias = "DEBIAS-M"
+  )
+  sapply(x, function(v){ lv <- tolower(v); if (lv %in% names(map)) map[[lv]] else v })
+}
+
 # --------- Args / config ---------
 args <- commandArgs(trailingOnly = TRUE)
 if (length(args) < 1) {
@@ -55,7 +67,7 @@ if (!length(clr_paths)) stop("No CLR matrices found (expected 'raw_clr.csv' or '
 method_names <- ifelse(basename(clr_paths) == "raw_clr.csv",
                        "Before correction",
                        gsub("^normalized_|_clr\\.csv$", "", basename(clr_paths)))
-file_list <- setNames(clr_paths, method_names)
+file_list <- setNames(clr_paths, method_short_label(method_names))
 method_levels <- names(file_list)  # preserve original order for legend
 
 # --------- Helpers ---------
@@ -200,9 +212,9 @@ if (only_baseline) {
   ggsave(file.path(output_folder, "auroc.tif"), p_roc, width = 6.5, height = 5, dpi = 300, compression = "lzw")
   
   if (isTRUE(base_auc$Needs_Correction[1])) {
-    message(sprintf("Baseline AUC = %.3f < %.2f — correction recommended.", base_auc$AUC[1], AUC_THRESHOLD))
+    message(sprintf("Baseline AUC = %.3f < %.2f - correction recommended.", base_auc$AUC[1], AUC_THRESHOLD))
   } else {
-    message(sprintf("Baseline AUC = %.3f ≥ %.2f — correction may not be necessary.", base_auc$AUC[1], AUC_THRESHOLD))
+    message(sprintf("Baseline AUC = %.3f >= %.2f - correction may not be necessary.", base_auc$AUC[1], AUC_THRESHOLD))
   }
   
 } else {
@@ -227,7 +239,7 @@ if (only_baseline) {
     geom_path(linewidth = 1) +
     geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
     coord_equal(xlim = c(0,1), ylim = c(0,1)) +
-    labs(title = "ROC curves (5 Folds × 5 Repeats)",
+    labs(title = "ROC curves (5 Folds * 5 Repeats)",
          x = "False Positive Rate (1 - Specificity)",
          y = "True Positive Rate (Sensitivity)",
          color = NULL) +

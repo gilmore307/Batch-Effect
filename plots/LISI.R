@@ -8,6 +8,18 @@ suppressPackageStartupMessages({
   library(tidyr)
   library(tibble)
   library(scales)
+
+# Map method codes to short labels for figures
+method_short_label <- function(x) {
+  map <- c(
+    qn = "QN", bmc = "BMC", limma = "Limma", conqur = "ConQuR",
+    plsda = "PLSDA-batch", combat = "ComBat", fsqn = "FSQN", mmuphin = "MMUPHin",
+    ruv = "RUV-III-NB", metadict = "MetaDICT", svd = "SVD", pn = "PN",
+    fabatch = "FAbatch", combatseq = "ComBat-seq", debias = "DEBIAS-M"
+  )
+  sapply(x, function(v){ lv <- tolower(v); if (lv %in% names(map)) map[[lv]] else v })
+}
+
   library(FNN)        # k-NN
   library(purrr)
   library(patchwork)  # combine plots
@@ -103,7 +115,7 @@ get_coords <- function(Xclr, n_pcs = 50) {
 
 # Compute iLISI (batch) + cLISI (phenotype) in chosen geometry for one matrix
 compute_lisi_for_method <- function(df, meta, method_name,
-                                    batch_col = "batchid", treat_col = "phenotype",
+                                    batch_col = "batch_id", treat_col = "phenotype",
                                     n_pcs = 50, k_nn = 30) {
   # Align on sample_id
   if (!"sample_id" %in% names(df)) {
@@ -177,7 +189,7 @@ rank_lisi_methods <- function(summary_df) {
 select_k_auto <- function(file_list, metadata,
                           ks = c(10, 15, 20, 30, 40, 50, 60),
                           n_pcs = 50,
-                          batch_col = "batchid",
+                          batch_col = "batch_id",
                           treat_col = "phenotype",
                           plateau_frac = 0.98,
                           slope_tol = 0.005) {
@@ -228,10 +240,6 @@ dir.create(output_folder, showWarnings = FALSE, recursive = TRUE)
 metadata <- readr::read_csv(file.path(output_folder, "metadata.csv"), show_col_types = FALSE) %>%
   mutate(sample_id = as.character(sample_id))
 
-# Print global baselines for sanity
-cat("≈ Global iLISI:", global_lisi_norm(metadata$batchid), "\n")
-cat("≈ Global cLISI:", global_lisi_norm(metadata$phenotype), "\n")
-
 # --------- Collect CLR files ---------
 clr_paths <- list.files(output_folder, pattern = "^normalized_.*_clr\\.csv$", full.names = TRUE)
 
@@ -252,7 +260,7 @@ if (opt_kauto) {
   auto <- select_k_auto(file_list, metadata,
                         ks = ks_scan,
                         n_pcs = if (is.na(opt_npcs)) NA_integer_ else opt_npcs,
-                        batch_col = "batchid",
+                        batch_col = "batch_id",
                         treat_col = "phenotype")
   opt_k <- auto$k
   readr::write_csv(auto$grid, file.path(output_folder, "LISI_k_grid.csv"))
@@ -265,7 +273,7 @@ lisi_long <- lapply(names(file_list), function(nm) {
   df <- readr::read_csv(file_list[[nm]], show_col_types = FALSE)
   compute_lisi_for_method(
     df, metadata, method_name = nm,
-    batch_col = "batchid", treat_col = "phenotype",
+    batch_col = "batch_id", treat_col = "phenotype",
     n_pcs = if (is.na(opt_npcs)) NA_integer_ else opt_npcs,
     k_nn  = opt_k
   )
@@ -288,11 +296,11 @@ print(ranked)
 write_csv(ranked, file.path(output_folder, "LISI_ranking.csv"))
 
 # ------------------------------------ Plots -------------------------------------
-# 1) Scatter: iLISI (y) vs 1−cLISI (x)
+# 1) Scatter: iLISI (y) vs 1-cLISI (x)
 plot_df <- summary_df %>%
   transmute(
     Method,
-    x = 1 - median_cLISI,               # 1 − cLISI on x (higher = better separation)
+    x = 1 - median_cLISI,               # 1 - cLISI on x (higher = better separation)
     y =      median_iLISI,              # iLISI on y (higher = better mixing)
     ylab = sprintf("%.4f", y)
   )
@@ -312,7 +320,7 @@ p_scatter <- ggplot(plot_df, aes(x = x, y = y, color = Method)) +
   scale_x_continuous(limits = c(0, 1), labels = number_format(accuracy = 0.01)) +
   scale_y_continuous(limits = c(0, 1), labels = number_format(accuracy = 0.01)) +
   labs(
-    x = expression("1 − cLISI (phenotype separation)"),
+    x = expression("1 - cLISI (phenotype separation)"),
     y = "iLISI (batch mixing)",
     title = paste0("LISI (", if (is.na(opt_npcs)) "CLR" else paste0(opt_npcs, " PCs"),
                    ", k=", opt_k, ")")
@@ -359,4 +367,3 @@ ggsave(file.path(output_folder, "LISI.png"),
        combined, width = 9.0, height = 8.0, dpi = 300)
 ggsave(file.path(output_folder, "LISI.tif"),
        combined, width = 9.0, height = 8.0, dpi = 300, compression = "lzw")
-

@@ -7,7 +7,7 @@ from dash.dependencies import Input, Output, State
 import dash
 import dash_bootstrap_components as dbc
 
-from _1_components import build_navbar, logger_box
+from _1_components import build_navbar
 from _2_utils import (
     get_session_dir,
     save_uploaded_file,
@@ -23,7 +23,6 @@ def upload_layout(active_path: str):
             dbc.Container(
                 dbc.Row(
                     [
-                        logger_box("upload-status", "Upload log"),
                         dbc.Col(
                             [
                                 html.H2("Upload data"),
@@ -96,8 +95,6 @@ def upload_layout(active_path: str):
 
 def register_upload_callbacks(app):
     @app.callback(
-        Output("upload-status", "children"),
-        Output("upload-status", "is_open"),
         Output("upload-complete", "data"),
         Output("matrix-file-info", "children"),
         Output("metadata-file-info", "children"),
@@ -110,7 +107,7 @@ def register_upload_callbacks(app):
     )
     def handle_upload(matrix_contents, metadata_contents, matrix_name, metadata_name, session_id):
         if not session_id:
-            return "Session initialisation failed.", True, False, "No file uploaded yet.", "No file uploaded yet."
+            return False, "No file uploaded yet.", "No file uploaded yet."
 
         session_dir = get_session_dir(session_id)
         saved_items: List[str] = []
@@ -129,10 +126,8 @@ def register_upload_callbacks(app):
             metadata_info = dbc.Badge("Uploaded", color="success", className="me-2"), html.Span(f"Source: {metadata_name} → Saved as: metadata.csv • {human_size(size)}")
             saved_items.append(f"Metadata saved as metadata.csv (source: {metadata_name})")
 
-        message = "No files were uploaded." if not saved_items else " | ".join(saved_items)
         upload_complete = (session_dir / "raw.csv").exists() and (session_dir / "metadata.csv").exists()
-
-        return message, True, upload_complete, matrix_info, metadata_info
+        return upload_complete, matrix_info, metadata_info
 
     @app.callback(
         Output("process-uploads", "disabled"),
@@ -186,7 +181,7 @@ def register_upload_callbacks(app):
                     ], md=4),
                     dbc.Col([
                         dbc.Label("Batch ID column"),
-                        dcc.Dropdown(id="map-batch-id", options=opts, placeholder="Select batchid column"),
+                        dcc.Dropdown(id="map-batch-id", options=opts, placeholder="Select batch_id column"),
                     ], md=4),
                     dbc.Col([
                         dbc.Label("Phenotype column"),
@@ -238,7 +233,7 @@ def register_upload_callbacks(app):
                 if name == sample_col:
                     new_fieldnames.append("sample_id")
                 elif name == batch_col:
-                    new_fieldnames.append("batchid")
+                    new_fieldnames.append("batch_id")
                 elif name == pheno_col:
                     new_fieldnames.append("phenotype")
                 else:

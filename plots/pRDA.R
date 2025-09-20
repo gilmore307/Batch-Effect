@@ -1,6 +1,6 @@
 # ================= pRDA variance partition in two geometries =================
 # A) Aitchison (CLR + RDA)    -> uses files: normalized_*_clr.csv  (+ raw.csv if present)
-# B) Bray–Curtis (TSS + dbRDA)-> uses files: normalized_*_tss.csv  (+ raw.csv if present)
+# B) Bray-Curtis (TSS + dbRDA)-> uses files: normalized_*_tss.csv  (+ raw.csv if present)
 suppressPackageStartupMessages({
   library(ggplot2)
   library(readr)
@@ -8,6 +8,18 @@ suppressPackageStartupMessages({
   library(tidyr)
   library(gridExtra)   # tableGrob + arrangeGrob
   library(grid)        # grobs
+
+# Map method codes to short labels for figures
+method_short_label <- function(x) {
+  map <- c(
+    qn = "QN", bmc = "BMC", limma = "Limma", conqur = "ConQuR",
+    plsda = "PLSDA-batch", combat = "ComBat", fsqn = "FSQN", mmuphin = "MMUPHin",
+    ruv = "RUV-III-NB", metadict = "MetaDICT", svd = "SVD", pn = "PN",
+    fabatch = "FAbatch", combatseq = "ComBat-seq", debias = "DEBIAS-M"
+  )
+  sapply(x, function(v){ lv <- tolower(v); if (lv %in% names(map)) map[[lv]] else v })
+}
+
   library(gtable)      # table tweaks
   library(vegan)       # rda, capscale, RsquareAdj
 })
@@ -22,6 +34,10 @@ if (!dir.exists(output_folder)) dir.create(output_folder, recursive = TRUE)
 
 metadata <- read_csv(file.path(output_folder, "metadata.csv"), show_col_types = FALSE) |>
   mutate(sample_id = as.character(sample_id))
+}
+if (!("batch_id" %in% names(metadata)) && ("batch_id" %in% names(metadata))) {
+  metadata$batch_id <- metadata$batch_id
+}
 
 # ---- Find normalized files ----
 clr_paths <- list.files(output_folder, pattern = "^normalized_.*_clr\\.csv$", full.names = TRUE)
@@ -35,8 +51,8 @@ if (!length(clr_paths) && !length(tss_paths)) {
 }
 
 name_from <- function(paths, suffix) gsub(paste0("^normalized_|_", suffix, "\\.csv$"), "", basename(paths))
-file_list_clr <- setNames(clr_paths, if (length(clr_paths)) name_from(clr_paths, "clr") else character())
-file_list_tss <- setNames(tss_paths, if (length(tss_paths)) name_from(tss_paths, "tss") else character())
+file_list_clr <- setNames(clr_paths, method_short_label(name_from(clr_paths, "clr")))
+file_list_tss <- setNames(tss_paths, method_short_label(name_from(tss_paths, "tss")))
 
 # Include raw_clr.csv / raw_tss.csv as "Before correction" if present
 raw_clr_fp <- file.path(output_folder, "raw_clr.csv")
@@ -82,7 +98,7 @@ safe_adjR2 <- function(fit) {
 }
 
 # --------- Core calculators (return named numeric: Treatment, Intersection, Batch, Residuals) ---------
-compute_prda_parts_aitch <- function(df, meta, batch_col = "batchid", treat_col = "phenotype") {
+compute_prda_parts_aitch <- function(df, meta, batch_col = "batch_id", treat_col = "phenotype") {
   # ensure sample_id present & align
   if (!"sample_id" %in% names(df)) {
     if (nrow(df) == nrow(meta)) df$sample_id <- meta$sample_id
@@ -133,7 +149,7 @@ compute_prda_parts_aitch <- function(df, meta, batch_col = "batchid", treat_col 
   parts
 }
 
-compute_prda_parts_bray <- function(df, meta, batch_col = "batchid", treat_col = "phenotype") {
+compute_prda_parts_bray <- function(df, meta, batch_col = "batch_id", treat_col = "phenotype") {
   # ensure sample_id present & align
   if (!"sample_id" %in% names(df)) {
     if (nrow(df) == nrow(meta)) df$sample_id <- meta$sample_id
@@ -143,7 +159,7 @@ compute_prda_parts_bray <- function(df, meta, batch_col = "batchid", treat_col =
   dfx <- inner_join(df, meta, by = "sample_id") %>%
     filter(!is.na(.data[[batch_col]]), !is.na(.data[[treat_col]]))
   
-  # features (TSS proportions for Bray–Curtis)
+  # features (TSS proportions for Bray-Curtis)
   feat_cols <- setdiff(names(df), "sample_id")
   X <- dfx %>% select(all_of(feat_cols)) %>% select(where(is.numeric)) %>% as.matrix()
   keep <- apply(X, 2, function(z) all(is.finite(z)) && sd(z, na.rm = TRUE) > 0)
@@ -158,7 +174,7 @@ compute_prda_parts_bray <- function(df, meta, batch_col = "batchid", treat_col =
     return(c(Treatment=0, Intersection=0, Batch=0, Residuals=1))
   }
   
-  # distance-based RDA (dbRDA) via capscale with Bray–Curtis
+  # distance-based RDA (dbRDA) via capscale with Bray-Curtis
   f_both   <- as.formula(paste("Xtss ~", treat_col, "+", batch_col))
   f_t_pure <- as.formula(paste("Xtss ~", treat_col, "+ Condition(", batch_col, ")"))
   f_b_pure <- as.formula(paste("Xtss ~", batch_col, "+ Condition(", treat_col, ")"))
@@ -295,9 +311,9 @@ plot_prda_with_table <- function(parts_df, file_list, title_prefix, outfile_pref
 
 # --------- Compute & plot: A) Aitchison (CLR + RDA) ---------
 if (length(file_list_clr)) {
-  batch_col <- "batchid"; treat_col <- "phenotype"
+  batch_col <- "batch_id"; treat_col <- "phenotype"
   if (!("phenotype" %in% names(metadata))) stop("metadata.csv has no 'phenotype'.")
-  if (dplyr::n_distinct(metadata$phenotype) < 2) stop("'phenotype' needs ≥ 2 levels.")
+  if (dplyr::n_distinct(metadata$phenotype) < 2) stop("'phenotype' needs >= 2 levels.")
   
   parts_df_aitch <- lapply(names(file_list_clr), function(nm) {
     message("pRDA (Aitchison) for: ", nm)
@@ -313,14 +329,14 @@ if (length(file_list_clr)) {
   )
 }
 
-# --------- Compute & plot: B) Bray–Curtis (TSS + dbRDA) ---------
+# --------- Compute & plot: B) Bray-Curtis (TSS + dbRDA) ---------
 if (length(file_list_tss)) {
-  batch_col <- "batchid"; treat_col <- "phenotype"
+  batch_col <- "batch_id"; treat_col <- "phenotype"
   if (!("phenotype" %in% names(metadata))) stop("metadata.csv has no 'phenotype'.")
   if (dplyr::n_distinct(metadata$phenotype) < 2) stop("'phenotype' needs ≥ 2 levels.")
   
   parts_df_bray <- lapply(names(file_list_tss), function(nm) {
-    message("pRDA (Bray–Curtis) for: ", nm)
+    message("pRDA (Bray-Curtis) for: ", nm)
     df <- read_csv(file_list_tss[[nm]], show_col_types = FALSE)
     v  <- compute_prda_parts_bray(df, metadata, batch_col, treat_col)
     tibble::tibble(Method = nm, Fraction = as.numeric(v))
@@ -328,12 +344,12 @@ if (length(file_list_tss)) {
   
   plot_prda_with_table(
     parts_df_bray, file_list_tss,
-    title_prefix  = "pRDA variance partition — Bray–Curtis (TSS + dbRDA)",
+    title_prefix  = "pRDA variance partition — Bray-Curtis (TSS + dbRDA)",
     outfile_prefix = "pRDA_braycurtis"
   )
 }
 
-# ==== Unified pRDA scoring (Aitchison + Bray–Curtis) =========================
+# ==== Unified pRDA scoring (Aitchison + Bray-Curtis) =========================
 # Per-geometry score (higher = better):
 #   Score = Treatment / (Treatment + Batch + 1e-12)
 # Unified score = geometric mean of available per-geometry scores.
@@ -415,8 +431,8 @@ if (only_baseline) {
     it <- sum(pf$Fraction[pf$Component == "Intersection"], na.rm = TRUE)
     rs <- sum(pf$Fraction[pf$Component == "Residuals"],    na.rm = TRUE)
     needs <- (is.finite(bt) && is.finite(tr) && (bt >= tr)) || (bt > 0.05)
-    assess_rows[["Bray–Curtis (TSS)"]] <- tibble::tibble(
-      Geometry = "Bray–Curtis (TSS)",
+    assess_rows[["Bray-Curtis (TSS)"]] <- tibble::tibble(
+      Geometry = "Bray-Curtis (TSS)",
       Treatment = tr, Batch = bt, Intersection = it, Residuals = rs,
       Score = if (is.finite(tr) && is.finite(bt)) tr / (tr + bt + 1e-12) else NA_real_,
       Needs_Correction = needs

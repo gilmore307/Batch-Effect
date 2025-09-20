@@ -1,5 +1,5 @@
 # =========================
-# Dissimilarity Heatmaps: Aitchison RMSE (CLR) & Bray–Curtis (TSS)
+# Dissimilarity Heatmaps: Aitchison RMSE (CLR) & Bray-Curtis (TSS)
 # =========================
 suppressPackageStartupMessages({
   library(ggplot2)
@@ -7,7 +7,19 @@ suppressPackageStartupMessages({
   library(dplyr)
   library(tidyr)
   library(patchwork)
-  library(vegan)  # Bray–Curtis
+  library(vegan)  # Bray-Curtis
+
+# Map method codes to short labels for figures
+method_short_label <- function(x) {
+  map <- c(
+    qn = "QN", bmc = "BMC", limma = "Limma", conqur = "ConQuR",
+    plsda = "PLSDA-batch", combat = "ComBat", fsqn = "FSQN", mmuphin = "MMUPHin",
+    ruv = "RUV-III-NB", metadict = "MetaDICT", svd = "SVD", pn = "PN",
+    fabatch = "FAbatch", combatseq = "ComBat-seq", debias = "DEBIAS-M"
+  )
+  sapply(x, function(v){ lv <- tolower(v); if (lv %in% names(map)) map[[lv]] else v })
+}
+
 })
 
 # ==== IO ====
@@ -47,7 +59,7 @@ if (!length(file_list_clr) && !length(file_list_tss)) {
   stop("No normalized files found (expected raw_clr.csv/raw_tss.csv and/or normalized_*_clr.csv / normalized_*_tss.csv) in ", output_folder)
 }
 
-batch_var <- "batchid"
+batch_var <- "batch_id"
 
 # ==== Helpers ====
 sort_levels_numeric <- function(x) {
@@ -125,7 +137,7 @@ batch_distance_matrix <- function(D_sample, batch_factor, diag_mode = c("zero","
   Db
 }
 
-rmse_batch_matrix_aitchison <- function(df, metadata, batch_var = "batchid", diag_mode = "zero") {
+rmse_batch_matrix_aitchison <- function(df, metadata, batch_var = "batch_id", diag_mode = "zero") {
   if (!"sample_id" %in% names(df)) {
     if (nrow(df) == nrow(metadata)) df$sample_id <- metadata$sample_id
     else stop("Input lacks 'sample_id' and row count != metadata; can't align samples.")
@@ -146,7 +158,7 @@ rmse_batch_matrix_aitchison <- function(df, metadata, batch_var = "batchid", dia
   list(Db = Db, order = b_levels)
 }
 
-dissim_batch_matrix_bray <- function(df, metadata, batch_var = "batchid", diag_mode = "zero") {
+dissim_batch_matrix_bray <- function(df, metadata, batch_var = "batch_id", diag_mode = "zero") {
   if (!"sample_id" %in% names(df)) {
     if (nrow(df) == nrow(metadata)) df$sample_id <- metadata$sample_id
     else stop("Input lacks 'sample_id' and row count != metadata; can't align samples.")
@@ -243,7 +255,7 @@ for (nm in names(mat_list_ait)) {
   plots_ait[[nm]] <- upper_heatmap_panel(
     Db = mat_list_ait[[nm]],
     ord = ord_list_ait[[nm]],
-    title_label = paste0("Dissimilarity Heatmap — RMSE (Aitchison/CLR) — ", nm),
+    title_label = paste0("Dissimilarity Heatmap - RMSE (Aitchison/CLR) - ", nm),
     fill_label = "RMSE (Aitchison/CLR)",
     global_min = gmin_ait,
     global_max = gmax_ait,
@@ -270,11 +282,11 @@ ggsave(file.path(output_folder, "dissimilarity_heatmaps_aitchison.png"),
 ggsave(file.path(output_folder, "dissimilarity_heatmaps_aitchison.tif"),
        plot = combined_ait, width = w_ait, height = h_ait, dpi = 300, compression = "lzw")
 
-# ==== B) Bray–Curtis heatmaps ====
+# ==== B) Bray-Curtis heatmaps ====
 mat_list_bc <- list()
 ord_list_bc <- list()
 for (nm in names(file_list_tss)) {
-  cat("Computing Bray–Curtis batch matrix:", nm, "\n")
+  cat("Computing Bray-Curtis batch matrix:", nm, "\n")
   df <- read_csv(file_list_tss[[nm]], show_col_types = FALSE)
   comp <- dissim_batch_matrix_bray(df, metadata, batch_var = batch_var, diag_mode = diag_mode)
   mat_list_bc[[nm]] <- comp$Db
@@ -289,8 +301,8 @@ for (nm in names(mat_list_bc)) {
   plots_bc[[nm]] <- upper_heatmap_panel(
     Db = mat_list_bc[[nm]],
     ord = ord_list_bc[[nm]],
-    title_label = paste0("Dissimilarity Heatmap — RMSR (Bray–Curtis/TSS) — ", nm),
-    fill_label = "RMSR (Bray–Curtis/TSS)",
+    title_label = paste0("Dissimilarity Heatmap - RMSR (Bray-Curtis/TSS) - ", nm),
+    fill_label = "RMSR (Bray-Curtis/TSS)",
     global_min = gmin_bc,
     global_max = gmax_bc,
     label_digits = label_digits,
@@ -298,7 +310,7 @@ for (nm in names(mat_list_bc)) {
   )
 }
 
-# ---- Combine & save (Bray–Curtis) ----
+# ---- Combine & save (Bray-Curtis) ----
 n_panels_bc <- length(plots_bc)
 if (n_panels_bc == 1L) {
   combined_bc <- plots_bc[[1]] +
@@ -316,7 +328,7 @@ ggsave(file.path(output_folder, "dissimilarity_heatmaps_braycurtis.png"),
 ggsave(file.path(output_folder, "dissimilarity_heatmaps_braycurtis.tif"),
        plot = combined_bc, width = w_bc, height = h_bc, dpi = 300, compression = "lzw")
 
-# ==== Unified ranking (Aitchison RMSE + Bray–Curtis) OR baseline-only assessment ====
+# ==== Unified ranking (Aitchison RMSE + Bray-Curtis) OR baseline-only assessment ====
 mean_ait <- if (length(mat_list_ait)) sapply(mat_list_ait, upper_mean) else numeric()
 mean_bc  <- if (length(mat_list_bc))  sapply(mat_list_bc,  upper_mean) else numeric()
 
@@ -345,7 +357,7 @@ if (only_baseline) {
     )
   }
   
-  # Bray–Curtis baseline assessment
+  # Bray-Curtis baseline assessment
   if ("Before correction" %in% names(file_list_tss)) {
     df_raw_tss <- read_csv(file_list_tss[["Before correction"]], show_col_types = FALSE)
     comp_zero  <- dissim_batch_matrix_bray(df_raw_tss, metadata, batch_var = batch_var, diag_mode = "zero")
@@ -356,7 +368,7 @@ if (only_baseline) {
     needs_corr <- is.finite(between) && is.finite(within) && (between > within)
     assess_rows[["TSS"]] <- tibble::tibble(
       Method            = "Before correction",
-      Geometry          = "Bray–Curtis (TSS)",
+      Geometry          = "Bray-Curtis (TSS)",
       Mean_Between      = between,
       Mean_Within       = within,
       Score             = score,
@@ -389,14 +401,13 @@ if (only_baseline) {
   readr::write_csv(assess_df, file.path(output_folder, "dissimilarity_raw_assessment.csv"))
   
   message(if (isTRUE(needs_corr_any)) {
-    "Assessment: Between-batch dissimilarity exceeds within-batch spread in at least one geometry — correction recommended."
+    "Assessment: Between-batch dissimilarity exceeds within-batch spread in at least one geometry - correction recommended."
   } else {
-    "Assessment: Between-batch dissimilarity does not exceed within-batch spread — correction may not be necessary."
+    "Assessment: Between-batch dissimilarity does not exceed within-batch spread - correction may not be necessary."
   })
   
 } else {
   # ---- Ranking (multiple methods) ----
-  # Convert “lower is better” (mean between-batch dissimilarity) into scores; combine via weighted geometric mean.
   weights <- c(aitchison = 0.5, bray = 0.5)
   wa <- weights["aitchison"]; wb <- weights["bray"]
   if (is.na(wa)) wa <- 0.5

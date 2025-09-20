@@ -51,6 +51,8 @@ if (!exists("say", mode = "function")) {
   fail_step  <- function(name, msg){ say("❌ FAIL:  ", name, " — ", msg); stop(paste0(name, ": ", msg)) }
 }
 
+ 
+
 # ---------------------------
 # Helper to run a step with logging
 # ---------------------------
@@ -144,10 +146,10 @@ base_M     <- as.matrix(uploaded_mat)
 base_form  <- input_form
 
 # Factor batch, covariates
-metadata$batchid <- factor(metadata$batchid, levels = unique(metadata$batchid))
-batchid <- metadata$batchid
+metadata$batch_id <- factor(metadata$batch_id, levels = unique(metadata$batch_id))
+batch_id <- metadata$batch_id
 
-covar <- metadata[, !(colnames(metadata) %in% c("sample_id","batchid","phenotype")), drop = FALSE]
+covar <- metadata[, !(colnames(metadata) %in% c("sample_id","batch_id","phenotype")), drop = FALSE]
 covar <- as.data.frame(lapply(covar, function(col) {
   if (is.numeric(col))      col[is.na(col)] <- mean(col, na.rm = TRUE)
   else if (is.factor(col))  { if (anyNA(col)) col[is.na(col)] <- levels(col)[1] }
@@ -156,8 +158,8 @@ covar <- as.data.frame(lapply(covar, function(col) {
 }))
 
 # Reference batch for methods needing it
-reference_batch <- levels(batchid)[1]
-ref_idx <- which(batchid == reference_batch)
+reference_batch <- levels(batch_id)[1]
+ref_idx <- which(batch_id == reference_batch)
 
 # ---------------------------
 # Global checks
@@ -198,7 +200,7 @@ if ("BMC" %in% method_list) {
   run_method("BMC", {
     require(pamr)
     X_log  <- get_input_for("BMC", base_M, base_form)
-    pam_in <- list(x = as.matrix(t(X_log)), batchlabels = factor(batchid))
+    pam_in <- list(x = as.matrix(t(X_log)), batchlabels = factor(batch_id))
     adj_log <- t(pamr.batchadjust(pam_in)$x)
     write_tss_clr("BMC", adj_log, "log", "normalized_bmc.csv")
   })
@@ -211,7 +213,7 @@ if ("limma" %in% method_list) {
     X_log <- get_input_for("limma", base_M, base_form)
     adj_t <- removeBatchEffect(
       t(X_log),
-      batch = factor(batchid),
+      batch = factor(batch_id),
       covariates = if (ncol(covar) > 0) as.matrix(covar) else NULL
     )
     adj <- t(adj_t)
@@ -229,7 +231,7 @@ if ("ConQuR" %in% method_list) {
     res_pos <- suppressWarnings(
       ConQuR(
         tax_tab = X_cnt,
-        batchid = as.factor(metadata$batchid),
+        batchid = as.factor(metadata$batch_id),
         covariates = covariates,
         batch_ref = as.character(reference_batch),
         logistic_lasso = FALSE, quantile_type = "standard", simple_match = FALSE,
@@ -251,7 +253,7 @@ if ("PLSDA" %in% method_list) {
     res <- PLSDA_batch(
       X = X_clr,
       Y.trt = as.factor(metadata$phenotype),
-      Y.bat = as.factor(metadata$batchid),
+      Y.bat = as.factor(metadata$batch_id),
       ncomp.trt = 1, ncomp.bat = 5
     )
     write_tss_clr("PLSDAbatch", res$X.nobatch, "clr", "normalized_plsda.csv")
@@ -265,7 +267,7 @@ if ("ComBat" %in% method_list) {
     X_log <- get_input_for("ComBat", base_M, base_form)
     adj_t <- ComBat(
       dat = t(X_log),
-      batch = batchid,
+      batch = batch_id,
       mod = if (ncol(covar) > 0) model.matrix(~ ., data = covar) else NULL,
       par.prior = FALSE, prior.plots = FALSE
     )
@@ -293,9 +295,9 @@ if ("MMUPHin" %in% method_list) {
     feat_counts <- t(round(X_tss * 1e6))  # features x samples
     fit <- adjust_batch(
       feature_abd = feat_counts,
-      batch       = "batchid",
+      batch       = "batch_id",
       covariates  = colnames(covar),
-      data        = transform(metadata, batchid=factor(batchid)),
+      data        = transform(metadata, batch_id=factor(batch_id)),
       control     = list(verbose = FALSE, diagnostic_plot = NULL)
     )
     out_pos <- t(fit$feature_abd_adj)
@@ -317,7 +319,7 @@ if ("RUV" %in% method_list) {
     if (!any(keep)) fail_step("RUV", "All genes have zero counts.")
     Y <- Y[keep, samp_ids, drop=FALSE]
     ctl_names <- rownames(Y)  # using all genes as controls (fast variant)
-    batch_factor <- factor(metadata[samp_ids, "batchid"])
+    batch_factor <- factor(metadata[samp_ids, "batch_id"])
     M <- model.matrix(~ 0 + batch_factor); rownames(M) <- samp_ids
     
     fit <- fastruvIII.nb(
@@ -338,7 +340,7 @@ if ("MetaDICT" %in% method_list) {
   run_method("MetaDICT", {
     suppressPackageStartupMessages({ library(MetaDICT); library(vegan) })
     O <- t(get_input_for("MetaDICT", base_M, base_form))  # samples x features for vegdist
-    meta <- transform(metadata, batch = batchid)
+    meta <- transform(metadata, batch = batch_id)
     O <- O[rowSums(O) > 0, , drop=FALSE]
     if (nrow(O) < 2) fail_step("MetaDICT", "Too few non-zero samples.")
     D <- as.matrix(vegdist(O, method = "bray"))
@@ -388,7 +390,7 @@ if ("PN" %in% method_list) {
     trt <- as.numeric(factor(metadata$phenotype, levels = sort(pheno_vals))) - 1
     X_tss <- get_input_for("PN", base_M, base_form)
     if (all(X_tss == 0)) fail_step("PN", "All zero after TSS.")
-    pn_pos <- percentile_norm(data = X_tss, batch = metadata$batchid, trt = trt, ctrl.grp = 0)
+    pn_pos <- percentile_norm(data = X_tss, batch = metadata$batch_id, trt = trt, ctrl.grp = 0)
     write_tss_clr("PN", pn_pos, "positive", "normalized_pn.csv")
   })
 }
@@ -408,7 +410,7 @@ if ("FAbatch" %in% method_list) {
       r
     }))
     y     <- factor(metadata$phenotype, levels = sort(pheno_vals))
-    batch <- factor(metadata$batchid)
+    batch <- factor(metadata$batch_id)
     v  <- apply(X_log, 2, var)
     keep_var <- is.finite(v) & v > 1e-12
     if (!any(keep_var)) fail_step("FAbatch", "All features ~zero variance.")
@@ -459,7 +461,7 @@ if ("ComBatSeq" %in% method_list) {
       metadata <- metadata[keep, , drop = FALSE]
     }
     if (!all(rownames(counts) == rownames(metadata))) fail_step("ComBat-Seq", "Sample IDs mismatch after filtering.")
-    adj <- ComBat_seq(counts = t(counts), batch = metadata$batchid, group = metadata$phenotype)
+    adj <- ComBat_seq(counts = t(counts), batch = metadata$batch_id, group = metadata$phenotype)
     out_counts <- t(adj)
     write_tss_clr("ComBat-Seq", out_counts, "counts", "normalized_combatseq.csv")
   })
@@ -502,7 +504,7 @@ if ("DEBIAS" %in% method_list) {
     use_classifier <- (!is_num) || (is_integerish && length(uniq_vals) <= 10)
     
     # batch in first col (0-based), then counts
-    b0 <- as.integer(factor(batchid)) - 1L
+    b0 <- as.integer(factor(batch_id)) - 1L
     if (any(is.na(b0))) fail_step("DEBIAS", "Invalid batch IDs.")
     X_with_batch <- cbind(b0, round(X_cnt))
     

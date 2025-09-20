@@ -1,4 +1,4 @@
-# ================= Alignment Score (AS) — CLR only, with ranking =================
+# ================= Alignment Score (AS) - CLR only, with ranking =================
 suppressPackageStartupMessages({
   library(FNN)
   library(readr)
@@ -8,6 +8,18 @@ suppressPackageStartupMessages({
 
 # --------- Args / config ---------
 args <- commandArgs(trailingOnly = TRUE)
+
+# Map method codes to short labels for figures
+method_short_label <- function(x) {
+  map <- c(
+    qn = "QN", bmc = "BMC", limma = "Limma", conqur = "ConQuR",
+    plsda = "PLSDA-batch", combat = "ComBat", fsqn = "FSQN", mmuphin = "MMUPHin",
+    ruv = "RUV-III-NB", metadict = "MetaDICT", svd = "SVD", pn = "PN",
+    fabatch = "FAbatch", combatseq = "ComBat-seq", debias = "DEBIAS-M"
+  )
+  sapply(x, function(v){ lv <- tolower(v); if (lv %in% names(map)) map[[lv]] else v })
+}
+
 if (length(args) < 1) {
   args <- "output/example"  # default folder for quick runs
 }
@@ -23,8 +35,6 @@ set.seed(42)
 # --------- Load metadata ---------
 metadata <- read_csv(file.path(output_folder, "metadata.csv"), show_col_types = FALSE) |>
   mutate(sample_id = as.character(sample_id))
-if (!("batchid" %in% names(metadata)))
-  stop("metadata.csv must contain a 'batchid' column.")
 
 # --------- Collect CLR files ---------
 clr_paths <- list.files(output_folder, pattern = "^normalized_.*_clr\\.csv$", full.names = TRUE)
@@ -38,7 +48,7 @@ if (!length(clr_paths)) stop("No CLR matrices found (expected 'raw_clr.csv' or '
 method_names <- ifelse(basename(clr_paths) == "raw_clr.csv",
                        "Before correction",
                        gsub("^normalized_|_clr\\.csv$", "", basename(clr_paths)))
-file_list <- setNames(clr_paths, method_names)
+file_list <- setNames(clr_paths, method_short_label(method_names))
 
 # lock plotting order to the discovered order
 method_levels <- names(file_list)
@@ -95,7 +105,7 @@ for (nm in names(file_list)) {
   if (!nrow(merged)) { warning(sprintf("Skipping %s: no overlap with metadata.", nm)); next }
   # only use original data columns (exclude metadata)
   X <- safe_numeric_matrix(merged[, setdiff(names(df), "sample_id"), drop = FALSE])
-  b <- merged$batchid
+  b <- merged$batch_id
   ascore <- tryCatch(
     compute_alignment_score(X, b, k = K_NEIGHBORS, var_prop = VAR_PROP_MIN, max_pcs = MAX_PCS),
     error = function(e) NA_real_
@@ -127,7 +137,7 @@ if (only_baseline) {
     geom_text(aes(label = sprintf("%.3f", AS)), vjust = -0.4, size = 3.2) +
     scale_y_continuous(limits = c(0, 1.05), expand = expansion(mult = c(0, 0.02))) +
     labs(title = "Alignment Score (baseline)",
-         x = "Method", y = "AS (0–1, higher = better mixing)") +
+         x = "Method", y = "AS (0- , higher = better mixing)") +
     theme_bw() +
     theme(
       axis.text.x = element_text(angle = 45, hjust = 1),
@@ -139,9 +149,9 @@ if (only_baseline) {
   ggsave(file.path(output_folder, "alignment_score.tif"), p_as, width = 6.5, height = 4.6, dpi = 300, compression = "lzw")
   
   if (isTRUE(base_row$Needs_Correction[1])) {
-    message(sprintf("Baseline AS = %.3f < %.2f — correction recommended.", base_row$AS[1], AS_THRESHOLD))
+    message(sprintf("Baseline AS = %.3f < %.2f - correction recommended.", base_row$AS[1], AS_THRESHOLD))
   } else {
-    message(sprintf("Baseline AS = %.3f ≥ %.2f — correction may not be necessary.", base_row$AS[1], AS_THRESHOLD))
+    message(sprintf("Baseline AS = %.3f >= %.2f - correction may not be necessary.", base_row$AS[1], AS_THRESHOLD))
   }
   
 } else {
@@ -159,7 +169,7 @@ if (only_baseline) {
     geom_text(aes(label = sprintf("%.3f", AS)), vjust = -0.4, size = 3.2) +
     scale_y_continuous(limits = c(0, 1.05), expand = expansion(mult = c(0, 0.02))) +
     labs(title = "Alignment Score",
-         x = "Method", y = "AS (0–1, higher = better mixing)") +
+         x = "Method", y = "AS (0-1, higher = better mixing)") +
     theme_bw() +
     theme(
       axis.text.x = element_text(angle = 45, hjust = 1),
