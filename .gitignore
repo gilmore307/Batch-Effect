@@ -1,3 +1,5 @@
 /output/example
 .RData
 .Rhistory
+/__pycache__
+/output

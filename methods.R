@@ -1,13 +1,12 @@
 # ---------------------------
 # Handle Arguments
 # ---------------------------
-#All Methods: FSQN,QN,BMC,limma,ConQuR,PLSDA,ComBat,MMUPHin,RUV,MetaDICT,SVD,PN,FAbatch,ComBatSeq
-
+# All Methods: FSQN, QN, BMC, limma, ConQuR, PLSDA, ComBat, MMUPHin, RUV,
+#              MetaDICT, SVD, PN, FAbatch, ComBatSeq, DEBIAS
 args <- commandArgs(trailingOnly = TRUE)
 if (length(args) < 1) {
-  args <- c("FSQN", "output/example")
+  args <- c("FSQN, QN, BMC, limma, ConQuR, PLSDA, ComBat, MMUPHin, RUV, MetaDICT, SVD, PN, FAbatch, ComBatSeq, DEBIAS", "output/example")
 }
-
 method_list   <- unlist(strsplit(args[1], ","))
 output_folder <- args[2]
 if (!dir.exists(output_folder)) dir.create(output_folder, recursive = TRUE)
@@ -37,35 +36,24 @@ suppressPackageStartupMessages({
 })
 
 # ---------------------------
-# Console Logger & Guards
+# Source preprocess.r (helpers: say(), write_tss_clr(), detect_input_form(),
+# to_tss(), to_log(), to_clr(), to_counts(), check_table(), post_summary(), ...)
 # ---------------------------
-.ts <- function() format(Sys.time(), "%H:%M:%S")
-say <- function(...){ cat(sprintf("[%s] ", .ts()), paste0(..., collapse=""), "\n") }
+source("preprocess.R")
 
-start_step <- function(name){ say("▶️ START: ", name); proc.time() }
-ok_step    <- function(name, t0){ dt <- proc.time()-t0; say("✅ DONE:  ", name, sprintf(" (%.2fs)", dt["elapsed"])) }
-warn_step  <- function(name, msg){ say("⚠️ WARN:  ", name, " — ", msg) }
-fail_step  <- function(name, msg){ say("❌ FAIL:  ", name, " — ", msg); stop(paste0(name, ": ", msg)) }
-
-check_table <- function(x, name = "table", allow_negative = TRUE) {
-  if (!is.data.frame(x) && !is.matrix(x)) fail_step(name, "Not a data.frame/matrix.")
-  DF <- as.data.frame(x, stringsAsFactors = FALSE)
-  if (nrow(DF) < 2 || ncol(DF) < 2) fail_step(name, "Too few rows/cols.")
-  num_cols <- vapply(DF, is.numeric, TRUE)
-  if (any(num_cols)) {
-    Mnum <- as.matrix(DF[num_cols])
-    bad_fin <- which(!is.finite(Mnum), arr.ind = TRUE)
-    if (nrow(bad_fin) > 0) fail_step(name, "NA/NaN/Inf present.")
-    if (!allow_negative && any(Mnum < 0, na.rm = TRUE)) fail_step(name, "Negative values not allowed.")
-  }
-  if (any(!num_cols)) {
-    Mchr <- DF[!num_cols]
-    na_idx <- which(is.na(Mchr), arr.ind = TRUE)
-    if (nrow(na_idx) > 0) fail_step(name, "Missing values in non-numeric columns.")
-  }
-  invisible(TRUE)
+# If preprocess.r did not define the logger for some reason, provide a minimal one
+if (!exists("say", mode = "function")) {
+  .ts <- function() format(Sys.time(), "%H:%M:%S")
+  say <- function(...){ cat(sprintf("[%s] ", .ts()), paste0(..., collapse=""), "\n") }
+  start_step <- function(name){ say("▶️ START: ", name); proc.time() }
+  ok_step    <- function(name, t0){ dt <- proc.time()-t0; say("✅ DONE:  ", name, sprintf(" (%.2fs)", dt["elapsed"])) }
+  warn_step  <- function(name, msg){ say("⚠️ WARN:  ", name, " — ", msg) }
+  fail_step  <- function(name, msg){ say("❌ FAIL:  ", name, " — ", msg); stop(paste0(name, ": ", msg)) }
 }
 
+# ---------------------------
+# Helper to run a step with logging
+# ---------------------------
 run_method <- function(name, expr){
   t0 <- start_step(name)
   out <- withCallingHandlers(
@@ -76,201 +64,14 @@ run_method <- function(name, expr){
     }, error = function(e){
       fail_step(name, conditionMessage(e))
     }),
-    warning = function(w){
-      warn_step(name, conditionMessage(w))
-    }
+    warning = function(w){ warn_step(name, conditionMessage(w)) }
   )
   invisible(out)
 }
 
-post_summary <- function(M, name){
-  M <- as.matrix(M)
-  say(sprintf("%s summary: min=%.5f max=%.5f rowmean|avg=%.2e NA=%d",
-              name, min(M, na.rm=TRUE), max(M, na.rm=TRUE),
-              mean(abs(rowMeans(M))), sum(!is.finite(M))))
-}
-
 # ---------------------------
-# Input form detection + converters
+# Desired inputs per method (uses converters from preprocess.r)
 # ---------------------------
-
-# ---------- helpers ----------
-
-.normalize_tss <- function(mat){
-  row_sums <- rowSums(mat)
-  row_sums[row_sums == 0] <- 1
-  out <- sweep(mat, 1, row_sums, "/")
-  out[is.na(out)] <- 0
-  out
-}
-
-# ---------- detectors ----------
-is_counts_matrix <- function(M, tol = 1e-6, frac = 0.97, min_row_sum = 1) {
-  M <- as.matrix(M)
-  if (any(!is.finite(M))) return(FALSE)
-  if (any(M < 0, na.rm = TRUE)) return(FALSE)
-  
-  intish <- mean(abs(M - round(M)) <= tol, na.rm = TRUE)
-  if (is.na(intish) || intish < frac) return(FALSE)
-  
-  rs <- rowSums(M)
-  if (!any(rs > min_row_sum, na.rm = TRUE)) return(FALSE)
-  
-  TRUE
-}
-
-is_tss_matrix <- function(M, rel_tol = 0.05) {
-  M <- as.matrix(M)
-  nr <- nrow(M); nc <- ncol(M)
-  if (!nr || !nc) return(FALSE)
-  if (any(!is.finite(M))) return(FALSE)
-  if (min(M) < 0)         return(FALSE)
-  storage.mode(M) <- "double"
-  rs <- .rowSums(M, nr, nc)
-  mu  <- mean(rs)
-  tol <- max(1e-5, rel_tol * abs(mu))
-  mean(abs(rs - mu) <= tol) >= 0.97
-}
-
-is_clr_matrix <- function(M, tol_mean = 1e-5, min_frac = 0.9) {
-  M <- as.matrix(M)
-  if (any(!is.finite(M))) return(FALSE)
-  nr <- nrow(M); nc <- ncol(M)
-  if (nr < 2 || nc < 2) return(FALSE)
-  rm <- rowMeans(M)
-  mean_ok <- mean(abs(rm) <= tol_mean)
-  pos <- rowSums(M > 0)
-  neg <- rowSums(M < 0)
-  signmix_ok <- mean((pos > 0 & neg > 0) | (pos == 0 & neg == 0))
-  (mean_ok >= min_frac) && (signmix_ok >= min_frac)
-}
-
-is_nonneg_log_matrix <- function(M, zero_pos_thresh = 0.8,
-                                 backcheck_max = 50000L, int_tol = 1e-6) {
-  M <- as.matrix(M)
-  nr <- nrow(M); nc <- ncol(M)
-  if (nr < 2 || nc < 2) return(FALSE)
-  if (any(!is.finite(M))) return(FALSE)
-  if (min(M) < 0) return(FALSE)
-  zero_pos_rows <- (rowSums(M == 0) > 0) & (rowSums(M > 0) > 0)
-  if (mean(zero_pos_rows) < zero_pos_thresh) return(FALSE)
-  v <- as.vector(M)
-  if (length(v) > backcheck_max) v <- sample(v, backcheck_max)
-  back <- expm1(v); back[back < 0] <- 0
-  mean(abs(back - round(back)) <= int_tol) >= 0.5
-}
-
-detect_input_form <- function(M) {
-  if (is_tss_matrix(M))        return("tss")
-  if (is_clr_matrix(M))        return("clr")
-  if (is_counts_matrix(M))     return("counts")
-  if (is_nonneg_log_matrix(M)) return("log")
-  if (all(as.matrix(M) >= 0, na.rm = TRUE)) return("positive")
-  "log"
-}
-
-# ---------- converters ----------
-
-to_counts <- function(M, from = NULL, scale = 1e5) {
-  M <- as.matrix(M)
-  if (is.null(from)) from <- detect_input_form(M)
-  
-  if (from == "counts") {
-    M[!is.finite(M)] <- 0
-    M[M < 0] <- 0
-    C <- round(M)
-    dimnames(C) <- dimnames(M)
-    return(C)
-  }
-  
-  P <- to_tss(M, from = from)
-  C <- round(P * scale)
-  dimnames(C) <- dimnames(M)
-  return(C)
-}
-
-to_tss <- function(M, from = NULL) {
-  M <- as.matrix(M)
-  if (is.null(from)) from <- detect_input_form(M)
-  
-  if (from %in% c("counts", "positive", "tss")) {
-    M[!is.finite(M)] <- 0
-    M[M < 0] <- 0
-    P <- .normalize_tss(M)
-    dimnames(P) <- dimnames(M)
-    return(P)
-  }
-  
-  if (from == "log") {
-    P <- if (all(M >= 0, na.rm = TRUE)) expm1(M) else exp(M)
-    P[!is.finite(P)] <- 0
-    P[P < 0] <- 0
-    P <- .normalize_tss(P)
-    dimnames(P) <- dimnames(M)
-    return(P)
-  }
-  
-  if (from == "clr") {
-    M[!is.finite(M)] <- -Inf
-    row_max <- apply(M, 1, function(x) {
-      xm <- max(x, na.rm = TRUE)
-      if (!is.finite(xm)) 0 else xm
-    })
-    M <- sweep(M, 1, row_max, "-")
-    P <- exp(M)
-    P[!is.finite(P)] <- 0
-    P <- .normalize_tss(P)
-    dimnames(P) <- dimnames(M)
-    return(P)
-  }
-  stop("to_tss: unknown 'from'=", from)
-}
-
-to_log <- function(M, from = NULL, pseudo_min = 1e-6) {
-  M <- as.matrix(M)
-  if (is.null(from)) from <- detect_input_form(M)
-  
-  if (from == "log") return(M)
-  
-  if (from %in% c("tss","positive","counts", "clr")) {
-    P <- to_tss(M, from = from)
-    nz <- P[P > 0]
-    if (!length(nz)) stop("to_log: no positive entries")
-    eps <- max(min(nz) * 0.65, pseudo_min)
-    P[P == 0] <- eps
-    return(log(P))
-  }
-  
-  stop("to_log: unknown 'from'=", from)
-}
-
-to_clr <- function(M, from = NULL, pseudo_min = 1e-6, count_scale = 1e6) {
-  M <- as.matrix(M)
-  if (is.null(from)) from <- detect_input_form(M)
-  
-  if (from == "clr") return(M)
-  
-  C <- to_tss(M, from = from)
-  C[!is.finite(C)] <- 0
-  C[C < 0] <- 0
-  
-  if (any(C == 0)) {
-    C <- t(apply(C, 1, function(r) {
-      if (all(r == 0)) return(rep(pseudo_min, length(r)))
-      nz <- r[r > 0]
-      eps <- max(pseudo_min, 0.65 * min(nz))
-      r[r == 0] <- eps
-      r
-    }))
-  }
-  
-  L <- log(C)
-  out <- sweep(L, 1, rowMeans(L), "-")
-  dimnames(out) <- dimnames(M)
-  out
-}
-
-# ---------- desired inputs per method ----------
 expected_input <- list(
   QN        = "tss",
   BMC       = "log",
@@ -286,43 +87,15 @@ expected_input <- list(
   PN        = "tss",
   FAbatch   = "log",
   ComBatSeq = "counts",
-  DEBIAS = "counts"
+  DEBIAS    = "counts"
 )
-
-# ---- Writer: emits BOTH TSS and CLR with suffixes ----
-write_tss_clr <- function(method, native, native_type, filename) {
-  base <- sub("\\.csv$", "", filename, ignore.case = TRUE)
-  
-  # --- TSS ---
-  tss <- to_tss(native, from = native_type)
-  post_summary(tss, paste0("🔄 ", method, " (TSS)"))
-  nm_tss <- basename(file.path(output_folder, paste0(base, "_tss.csv")))
-  t0 <- start_step(paste0("Write ", nm_tss))
-  write.csv(tss, file.path(output_folder, paste0(base, "_tss.csv")), row.names = FALSE)
-  ok_step(paste0("Write ", nm_tss), t0)
-  
-  # --- CLR ---
-  clr <- to_clr(native, from = native_type)
-  post_summary(clr, paste0("🔄 ", method, " (CLR)"))
-  nm_clr <- basename(file.path(output_folder, paste0(base, "_clr.csv")))
-  t0 <- start_step(paste0("Write ", nm_clr))
-  write.csv(clr, file.path(output_folder, paste0(base, "_clr.csv")), row.names = FALSE)
-  ok_step(paste0("Write ", nm_clr), t0)
-}
 
 # get input matrix for a method given a base matrix and its form
 get_input_for <- function(method, base_M, base_form) {
   target <- expected_input[[method]]
   if (is.null(target)) stop("Unknown method in expected_input: ", method)
-  
-  if (target == base_form) {
-    # no conversion — keep quiet to avoid noise
-    return(base_M)
-  }
-  
-  # print a conversion note once per method
+  if (target == base_form) return(base_M)
   say(sprintf("🔄 Convert for %s: %s → %s", method, base_form, target))
-  
   out <- switch(
     target,
     "tss"    = to_tss(base_M, base_form),
@@ -331,12 +104,9 @@ get_input_for <- function(method, base_M, base_form) {
     "counts" = to_counts(base_M, base_form),
     stop("Unhandled target: ", target)
   )
-  
-  # brief post note (dims help sanity-check orientation: rows=samples, cols=features)
   say(sprintf("   ↳ done (%s → %s) | n=%d×%d", base_form, target, nrow(out), ncol(out)))
   out
 }
-
 
 # ---------------------------
 # Load Data
@@ -403,11 +173,10 @@ run_method("Input checks", {
   say("Reference batch level: ", as.character(reference_batch),
       " | #ref samples: ", length(ref_idx))
   if (length(ref_idx) < 1) warn_step("Reference", "No samples in reference batch level.")
-  write_tss_clr("RAW", base_M, base_form, "raw.csv")
 })
 
 # ---------------------------
-# Methods (each uses get_input_for to receive expected input form; outputs saved as TSS+CLR)
+# Methods (uses get_input_for + write_tss_clr from preprocess.r)
 # ---------------------------
 
 # QN — expects TSS
@@ -699,7 +468,6 @@ if ("ComBatSeq" %in% method_list) {
 # DEBIAS — Python package via reticulate; expects counts + phenotype; writes TSS+CLR
 if ("DEBIAS" %in% method_list) {
   run_method("DEBIAS", {
-    # ---- pin Python & ensure deps BEFORE any Python import ----
     suppressPackageStartupMessages(library(reticulate))
     py <- Sys.getenv("RETICULATE_PYTHON")
     if (!nzchar(py)) py <- "C:/Users/sunch/ANACON~1/python.exe"  # your Anaconda Python
@@ -716,7 +484,6 @@ if ("DEBIAS" %in% method_list) {
     np <- import("numpy", delay_load = TRUE)
     debiasm <- import("debiasm", delay_load = TRUE)
     
-    # ---- inputs ----
     X_cnt <- tryCatch(
       get_input_for("DEBIAS", base_M, base_form),
       error = function(e) { say("DEBIAS: expected_input missing; converting to counts."); to_counts(base_M, base_form) }
@@ -768,7 +535,7 @@ if ("DEBIAS" %in% method_list) {
       y_train_R <- y_all[!val_inds]
     }
     
-    # numpy arrays (fix dtype & avoid scalarization)
+    # numpy arrays
     X_train <- np$array(X_train_R, dtype = "int64")
     X_val   <- np$array(X_val_R,   dtype = "int64")
     X_full  <- np$array(X_with_batch, dtype = "int64")
