@@ -1,10 +1,13 @@
-# ================= PVCA (Principal Variance Component Analysis) — mbec-style, pRDA label style =================
+# ================= PVCA (Principal Variance Component Analysis) — mbec-style, pRDA table style =================
 suppressPackageStartupMessages({
   library(ggplot2)
   library(readr)
   library(dplyr)
   library(tidyr)
   library(tibble)
+  library(gridExtra)  # tableGrob + arrangeGrob
+  library(grid)       # rectGrob, segmentsGrob
+  library(gtable)     # add borders/lines to table grob
 })
 
 if (!requireNamespace("lme4", quietly = TRUE)) {
@@ -15,8 +18,8 @@ library(lme4)
 # --------- Helpers ---------
 pvca_zero <- function() {
   tibble(
-    Component = factor(c("Treatment","Interaction","Batch","Residuals"),
-                       levels = c("Treatment","Interaction","Batch","Residuals")),
+    Component = factor(c("Treatment","Intersection","Batch","Residuals"),
+                       levels = c("Treatment","Intersection","Batch","Residuals")),
     Fraction  = c(0,0,0,1)
   )
 }
@@ -115,7 +118,7 @@ compute_pvca <- function(df, meta, batch_col = "batchid", treat_col = "phenotype
       .batch = meta_ord[[batch_col]],
       .treat = meta_ord[[treat_col]]
     )
-    dat_j$.inter <- interaction(dat_j$.batch, dat_j$.treat, drop = TRUE)
+    dat_j$.inter <- interaction(dat_j$.batch, dat_j$.treat, drop = TRUE)  # internal name can stay ".inter"
     
     # fit with interaction; if singular, drop interaction
     fit <- tryCatch(
@@ -168,7 +171,7 @@ compute_pvca <- function(df, meta, batch_col = "batchid", treat_col = "phenotype
   }
   
   # aggregate & renormalize — PRESERVE NAMES!
-  parts <- c(Treatment = w_treat, Interaction = w_inter, Batch = w_batch, Residuals = w_res)
+  parts <- c(Treatment = w_treat, Intersection = w_inter, Batch = w_batch, Residuals = w_res)
   parts[!is.finite(parts)] <- 0
   nm <- names(parts)
   parts <- pmax(parts, 0)  # pmax can drop names
@@ -178,16 +181,16 @@ compute_pvca <- function(df, meta, batch_col = "batchid", treat_col = "phenotype
   if (is.finite(s) && s > 0) {
     parts <- parts / s
   } else {
-    parts <- c(Treatment = 0, Interaction = 0, Batch = 0, Residuals = 1)
+    parts <- c(Treatment = 0, Intersection = 0, Batch = 0, Residuals = 1)
   }
   
-  Fraction <- as.numeric(parts[c("Treatment","Interaction","Batch","Residuals")])
+  Fraction <- as.numeric(parts[c("Treatment","Intersection","Batch","Residuals")])
   Fraction[!is.finite(Fraction)] <- 0
   Fraction <- pmin(pmax(Fraction, 0), 1)
   
   tibble(
-    Component = factor(c("Treatment","Interaction","Batch","Residuals"),
-                       levels = c("Treatment","Interaction","Batch","Residuals")),
+    Component = factor(c("Treatment","Intersection","Batch","Residuals"),
+                       levels = c("Treatment","Intersection","Batch","Residuals")),
     Fraction  = Fraction
   )
 }
@@ -200,9 +203,25 @@ metadata <- readr::read_csv(file.path(output_folder, "metadata.csv"), show_col_t
   dplyr::mutate(sample_id = as.character(sample_id))
 
 # matrices: Raw + normalized_*
-file_paths <- list.files(output_folder, pattern = "^normalized_.*\\.csv$", full.names = TRUE)
-file_list  <- setNames(file_paths, gsub("^normalized_|\\.csv$", "", basename(file_paths)))
-file_list  <- c("Before correction" = file.path(output_folder, "raw.csv"), file_list)
+file_paths <- list.files(
+  output_folder,
+  pattern = "^normalized_.*_clr\\.csv$",
+  full.names = TRUE
+)
+
+# Clean names (remove prefix + suffix)
+file_names <- gsub("^normalized_|_clr\\.csv$", "", basename(file_paths))
+file_list  <- setNames(file_paths, file_names)
+
+# Prepend raw.csv as "Before Correction" if present
+raw_fp <- file.path(output_folder, "raw.csv")
+if (file.exists(raw_fp)) {
+  file_list <- c("Before Correction" = raw_fp, file_list)
+}
+
+if (length(file_list) == 0) {
+  stop("No CLR files found. Expected files matching 'normalized_*_clr.csv' in ", output_folder)
+}
 
 pvca_list <- lapply(names(file_list), function(nm) {
   message("Computing PVCA: ", nm)
@@ -220,12 +239,8 @@ pvca_list <- lapply(names(file_list), function(nm) {
 pvca_df <- dplyr::bind_rows(pvca_list) %>%
   dplyr::mutate(Method = factor(Method, levels = names(file_list)))
 
-# --------- Plot PVCA in pRDA style: fixed on-bar labels (T/I/B/R) ---------
-component_order <- c("Treatment","Interaction","Batch","Residuals")
-abbr <- c(Treatment="T", Interaction="I", Batch="B", Residuals="R")
-# fixed vertical label positions as fractions of bar height (tweak if desired)
-label_pos_frac <- c(Treatment=0.95, Interaction=0.65, Batch=0.35, Residuals=0.08)
-
+# --------- Plot PVCA in pRDA style: no on-bar labels, table below ----------
+component_order <- c("Treatment","Intersection","Batch","Residuals")
 pvca_plot_df <- pvca_df %>%
   dplyr::mutate(
     Method    = factor(Method, levels = names(file_list)),
@@ -233,11 +248,7 @@ pvca_plot_df <- pvca_df %>%
     Fraction  = ifelse(is.finite(Fraction), Fraction, 0)
   ) %>%
   dplyr::mutate(Fraction = pmin(pmax(Fraction, 0), 1)) %>%
-  dplyr::arrange(Method, Component) %>%
-  dplyr::mutate(
-    label = paste0(abbr[as.character(Component)], " = ", round(Fraction*100)),
-    y_pos = label_pos_frac[as.character(Component)]
-  )
+  dplyr::arrange(Method, Component)
 
 # sanity check: 4 rows per method
 stopifnot(all(dplyr::count(pvca_plot_df, Method)$n == 4))
@@ -245,20 +256,18 @@ stopifnot(all(dplyr::count(pvca_plot_df, Method)$n == 4))
 cols <- c(
   "Residuals"    = "#1F77B4",
   "Batch"        = "#FF7F0E",
-  "Interaction"  = "#FFD54F",
+  "Intersection" = "#FFD54F",
   "Treatment"    = "#BDBDBD"
 )
 
 p <- ggplot(pvca_plot_df, aes(x = Method, y = Fraction, fill = Component)) +
   geom_col(width = 0.72, color = "white", linewidth = 0.4) +
   scale_fill_manual(values = cols,
-                    breaks = c("Residuals","Batch","Interaction","Treatment"),
+                    breaks = c("Residuals","Batch","Intersection","Treatment"),
                     name = "Variation sources") +
-  # fixed-position labels on bars
-  geom_text(aes(y = y_pos, label = label), size = 3.2, vjust = 0.5) +
   scale_y_continuous(
     labels = scales::percent_format(accuracy = 1),
-    limits = c(0, 1.05),             # 105% headroom to avoid clipping labels
+    limits = c(0, 1.05),             # 105% headroom
     expand = expansion(mult = c(0, 0))
   ) +
   labs(x = "Methods", y = "Explained variance (%)", title = "PVCA (weighted by PC variance)") +
@@ -272,29 +281,77 @@ p <- ggplot(pvca_plot_df, aes(x = Method, y = Fraction, fill = Component)) +
     panel.grid.minor   = element_blank()
   )
 
-# --------- Save ---------
-ggsave(file.path(output_folder, "PVCA.png"), p, width = 7.2, height = 5.6, dpi = 300)
-ggsave(file.path(output_folder, "PVCA.tif"), p, width = 7.2, height = 5.6, dpi = 300, compression = "lzw")
+# --------- Build the styled values table (percentages) ----------
+tbl <- pvca_plot_df %>%
+  dplyr::select(Method, Component, Fraction) %>%
+  dplyr::mutate(`%` = scales::percent(Fraction, accuracy = 1)) %>%
+  dplyr::select(-Fraction) %>%
+  tidyr::pivot_wider(names_from = Component, values_from = `%`) %>%
+  dplyr::arrange(Method) %>%
+  dplyr::select(Method, Treatment, Intersection, Batch, Residuals)
 
+nr <- nrow(tbl); nc <- ncol(tbl)
+stripe_rows <- rep(c("#FBFCFF", "#F7F8FC"), length.out = nr)
+fill_core <- matrix(rep(stripe_rows, each = nc), nrow = nr, ncol = nc)
 
-# Function to rank methods based on Treatment and Batch variance
-rank_pvca_methods <- function(pvca_df) {
-  # Compute the median fraction for Treatment and Batch components
-  median_pvca <- pvca_df %>%
-    group_by(Method, Component) %>%
-    summarise(median_Fraction = median(Fraction, na.rm = TRUE), .groups = "drop") %>%
-    spread(Component, median_Fraction)  # Wide format: one column for Treatment, one for Batch
-  
-  # Rank methods based on median Treatment fraction (higher is better) and Batch fraction (lower is better)
-  ranked_results <- median_pvca %>%
-    arrange(desc(Treatment), Batch) %>%  # Prioritize Treatment (higher) and then Batch (lower)
-    mutate(Rank = row_number())  # Assign ranks
-  
-  return(ranked_results)
+tbl_theme <- gridExtra::ttheme_minimal(
+  core = list(
+    fg_params = list(cex = 0.9),
+    bg_params = list(fill = fill_core, col = "#D0D7DE"),  # light inner borders
+    padding   = unit(c(6, 4), "mm")
+  ),
+  colhead = list(
+    fg_params = list(cex = 1.0, fontface = 2),
+    bg_params = list(fill = "#ECEFF4", col = "#D0D7DE"),
+    padding   = unit(c(7, 4), "mm")
+  )
+)
+
+tbl_grob <- gridExtra::tableGrob(tbl, rows = NULL, theme = tbl_theme)
+
+# Add a clean outer border around the table
+tbl_grob <- gtable::gtable_add_grob(
+  tbl_grob,
+  grobs = grid::rectGrob(gp = grid::gpar(fill = NA, col = "#9AA0A6", lwd = 1)),
+  t = 1, l = 1, b = nrow(tbl_grob), r = ncol(tbl_grob), name = "outer-border"
+)
+
+# Add a horizontal rule under the header (fix y0/y1 to avoid diagonal)
+header_rows <- which(tbl_grob$layout$name %in% c("colhead-fg", "colhead-bg"))
+if (length(header_rows)) {
+  header_bottom <- max(tbl_grob$layout$b[header_rows])
+  tbl_grob <- gtable::gtable_add_grob(
+    tbl_grob,
+    grobs = grid::segmentsGrob(
+      x0 = unit(0, "npc"), x1 = unit(1, "npc"),
+      y0 = unit(0, "npc"), y1 = unit(0, "npc"),
+      gp = grid::gpar(col = "#9AA0A6", lwd = 1.2, lineend = "butt")
+    ),
+    t = header_bottom, l = 1, r = ncol(tbl_grob), name = "header-sep"
+  )
 }
 
-# Rank the methods based on PVCA results for Treatment and Batch components
-ranked_pvca_methods <- rank_pvca_methods(pvca_plot_df)
+# --------- Stack plot over table and save ----------
+combined <- gridExtra::arrangeGrob(p, tbl_grob, ncol = 1, heights = c(3, 1.35))
 
-# Display the ranked methods
-ranked_pvca_methods
+ggsave(file.path(output_folder, "PVCA.png"),
+       plot = combined, width = 7.2, height = 6.8, dpi = 300)
+
+ggsave(file.path(output_folder, "PVCA.tif"),
+       plot = combined, width = 7.2, height = 6.8, dpi = 300, compression = "lzw")
+
+# --------- Rank the methods based on Treatment (desc) then Batch (asc) ----------
+rank_pvca_methods <- function(df_long) {
+  df_long %>%
+    group_by(Method) %>%
+    summarise(
+      Treatment = sum(Fraction[Component == "Treatment"], na.rm = TRUE),
+      Batch     = sum(Fraction[Component == "Batch"],     na.rm = TRUE)
+    ) %>%
+    arrange(desc(Treatment), Batch) %>%
+    mutate(Rank = row_number())
+}
+
+ranked_pvca_methods <- rank_pvca_methods(pvca_plot_df)
+print(ranked_pvca_methods)
+readr::write_csv(ranked_pvca_methods, file.path(output_folder, "pvca_ranking.csv"))

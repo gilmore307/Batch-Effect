@@ -59,10 +59,26 @@ output_folder <- args[1]
 metadata <- read_csv(file.path(output_folder, "metadata.csv"), show_col_types = FALSE) |>
   mutate(sample_id = as.character(sample_id))
 
-# ==== Find All Normalized Files ====
-file_paths <- list.files(output_folder, pattern = "^normalized_.*\\.csv$", full.names = TRUE)
-file_list  <- setNames(file_paths, gsub("^normalized_|\\.csv$", "", basename(file_paths)))
-file_list  <- c(Raw = file.path(output_folder, "raw.csv"), file_list)
+# ==== Find All CLR Normalized Files ====
+file_paths <- list.files(
+  output_folder,
+  pattern = "^normalized_.*_clr\\.csv$",
+  full.names = TRUE
+)
+
+# Clean names (remove prefix + suffix)
+file_names <- gsub("^normalized_|_clr\\.csv$", "", basename(file_paths))
+file_list  <- setNames(file_paths, file_names)
+
+# Prepend raw.csv as "Before Correction" if present
+raw_fp <- file.path(output_folder, "raw.csv")
+if (file.exists(raw_fp)) {
+  file_list <- c("Before Correction" = raw_fp, file_list)
+}
+
+if (length(file_list) == 0) {
+  stop("No CLR files found. Expected files matching 'normalized_*_clr.csv' in ", output_folder)
+}
 
 # ==== build plot.df + metric.df like mbecPCA would ====
 # ensures consistent factor levels across panels so legend can be shared
@@ -80,6 +96,7 @@ compute_pca_frames <- function(df, metadata, model.vars = c("batchid","group"), 
   X <- as.matrix(X[, keep, drop = FALSE])
   if (!ncol(X)) stop("No variable numeric features remain for PCA.")
   
+  # NOTE: If your inputs are CLR already, consider scale. = FALSE for strict Aitchison PCA.
   pc <- prcomp(X, center = TRUE, scale. = TRUE)
   k  <- min(n_pcs, ncol(pc$x))
   
@@ -166,7 +183,6 @@ mbecPCAPlot <- function(plot.df, metric.df, model.vars, pca.axes, label=NULL) {
         } else scale_shape_discrete(name = "Phenotype")
       }
     } +
-    # Put Batch first, long horizontal row; Phenotype under it (legend.box='vertical')
     guides(
       colour = guide_legend(order = 1, nrow = 1, byrow = TRUE),  # many batches on one row
       shape  = guide_legend(order = 2, nrow = 1)
@@ -211,8 +227,7 @@ mbecPCAPlot <- function(plot.df, metric.df, model.vars, pca.axes, label=NULL) {
       plot.margin = pmar
     )
   
-  # right density (PC2) — use coord_flip(), set limits with scale_y_continuous
-  # ---- right density (PC2) — rotate so PC2 is vertical, density extends right ----
+  # right density (PC2)
   pRight <- ggplot(plot.df, aes(y = !!sym(ycol))) +
     {
       if (!is.na(var.shape) && var.shape %in% names(plot.df)) {
@@ -229,7 +244,6 @@ mbecPCAPlot <- function(plot.df, metric.df, model.vars, pca.axes, label=NULL) {
     } +
     xlab(NULL) + ylab("Density") +
     scale_fill_manual(values = mbecCols, guide = "none") +
-    # match the main plot's y-range exactly
     scale_y_continuous(limits = ylim, expand = expansion(mult = c(0.02, 0.02))) +
     theme_bw() +
     theme(
@@ -260,25 +274,25 @@ message(sprintf("Using color=%s%s",
 
 # ==== build + save PCA panels for each matrix (single legend across ALL) ====
 pcs_to_plot <- c(1, 2)
+frames_cache <- list()   # <--- build this for ranking
 plots <- list()
 
 for (nm in names(file_list)) {
   cat("Processing:", nm, "\n")
   df <- read_csv(file_list[[nm]], show_col_types = FALSE)
   
-  frames    <- compute_pca_frames(df, metadata, model.vars = model_vars, n_pcs = max(pcs_to_plot))
-  used_vars <- frames$used.vars
+  frames <- compute_pca_frames(df, metadata, model.vars = model_vars, n_pcs = max(pcs_to_plot))
+  frames_cache[[nm]] <- frames
   
   plt <- mbecPCAPlot(
     plot.df   = frames$plot.df,
     metric.df = frames$metric.df,
-    model.vars = used_vars,
+    model.vars = frames$used.vars,
     pca.axes  = pcs_to_plot,
     label     = nm
   )
   
   plots[[nm]] <- plt
-
 }
 
 # ---- Combine ALL panels and keep ONLY ONE legend at the bottom (horizontal) ----
@@ -299,54 +313,55 @@ ggsave(file.path(output_folder, "pca.tif"),
        plot = combined, width = 9.5 * ncol_grid, height = 6 * ceiling(length(plots) / ncol_grid),
        dpi = 300, compression = "lzw")
 
-
-# Function to compute the centroid of each batch in PCA space
-compute_centroids <- function(pca_scores, batch_var) {
-  # Compute centroids (mean of each batch group in PCA space)
-  centroids <- pca_scores %>%
-    group_by(!!sym(batch_var)) %>%
-    summarise(PC1 = mean(PC1), PC2 = mean(PC2))
-  
-  return(centroids)
+# =========================
+# PCA ranking (Aitchison/CLR-like PCA view)
+# =========================
+compute_centroids_pca <- function(scores, batch_var = "batchid") {
+  scores %>%
+    dplyr::group_by(!!rlang::sym(batch_var)) %>%
+    dplyr::summarise(PC1 = mean(PC1), PC2 = mean(PC2), .groups = "drop")
 }
-
-# Function to compute the distance between centroids of different batches
 compute_centroid_distances <- function(centroids) {
-  # Calculate pairwise Euclidean distances between centroids
-  dist_matrix <- dist(centroids[, c("PC1", "PC2")], method = "euclidean")
-  return(mean(dist_matrix))  # Average distance between batch centroids
+  if (nrow(centroids) < 2) return(NA_real_)
+  as.numeric(mean(dist(centroids[, c("PC1","PC2")], method = "euclidean")))
+}
+pca_metric_score <- function(batch_distance, coverage) {
+  if (is.na(batch_distance) || is.na(coverage)) return(NA_real_)
+  coverage <- max(0, min(1, coverage))         # clamp to [0,1]
+  (1 / (1 + batch_distance)) * coverage        # higher = better
 }
 
-# Initialize a data frame to store results
-rank_results <- tibble(Method = character(), Batch_Distance = numeric())
+rank_tbl <- dplyr::tibble(Method = character(),
+                          Batch_Distance = numeric(),
+                          Coverage = numeric(),
+                          Score = numeric())
 
-# Loop over all methods to compute the distance between batch centroids
-for (method_name in names(file_list)) {
-  cat("Processing:", method_name, "\n")
+for (m in names(frames_cache)) {
+  fr <- frames_cache[[m]]
+  # Batch centroid distance on PC1–PC2
+  if (!all(c("PC1","PC2","sample_id") %in% names(fr$plot.df))) next
+  md <- metadata[match(fr$plot.df$sample_id, metadata$sample_id), , drop = FALSE]
+  scores <- fr$plot.df %>%
+    dplyr::select(sample_id, PC1, PC2) %>%
+    dplyr::mutate(batchid = factor(md$batchid))
+  cents <- compute_centroids_pca(scores, "batchid")
+  D <- compute_centroid_distances(cents)
   
-  # Read in the data for the current method
-  df <- read_csv(file_list[[method_name]], show_col_types = FALSE)
+  # Coverage from var.explained
+  ve <- fr$metric.df$var.explained
+  cov2 <- sum(ve[1:min(2, length(ve))], na.rm = TRUE) / 100
   
-  # Compute PCA on the data
-  frames <- compute_pca_frames(df, metadata, model.vars = c("batchid"), n_pcs = 2)
-  
-  # Get PCA scores and batch information
-  pca_scores <- frames$plot.df %>% select(sample_id, PC1, PC2, batchid)
-  
-  # Compute centroids for each batch
-  centroids <- compute_centroids(pca_scores, batch_var = "batchid")
-  
-  # Compute the distance between batch centroids
-  batch_distance <- compute_centroid_distances(centroids)
-  
-  # Store the result
-  rank_results <- bind_rows(rank_results, tibble(Method = method_name, Batch_Distance = batch_distance))
+  rank_tbl <- dplyr::bind_rows(rank_tbl, dplyr::tibble(
+    Method = m,
+    Batch_Distance = D,
+    Coverage = cov2,
+    Score = pca_metric_score(D, cov2)
+  ))
 }
 
-# Rank the methods based on batch separation
-ranked_methods <- rank_results %>%
-  arrange(desc(Batch_Distance)) %>%
-  mutate(Rank = row_number())
+ranked_pca <- rank_tbl %>%
+  dplyr::arrange(dplyr::desc(Score)) %>%
+  dplyr::mutate(Rank = dplyr::row_number())
 
-# Display the ranked methods based on batch separation
-ranked_methods
+print(ranked_pca, n = nrow(ranked_pca))
+readr::write_csv(ranked_pca, file.path(output_folder, "pca_ranking.csv"))

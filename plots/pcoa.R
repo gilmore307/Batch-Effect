@@ -3,29 +3,34 @@ suppressPackageStartupMessages({
   library(ggplot2)
   library(readr)
   library(dplyr)
-  library(patchwork)  # for layouts + legend collection
+  library(patchwork)  # layouts + legend collection
   library(rlang)
+  library(vegan)      # Bray–Curtis
 })
 
-# ==== Helpers ====
-guess_shape_var <- function(meta, batch_col = "batchid") {
-  cand <- c("group","phenotype","condition","status","case_control","class","disease","label")
-  hit <- cand[cand %in% names(meta)]
-  if (length(hit)) return(hit[1])
-  facs <- names(Filter(function(v) {
-    !is.numeric(meta[[v]]) && !is.integer(meta[[v]]) && length(unique(meta[[v]])) <= 12
-  }, meta))
-  facs <- setdiff(facs, c("sample_id", batch_col))
-  if (length(facs)) return(facs[1])
-  return(NA_character_)
+# ==== Helpers (robust ranges/padding) ====
+safe_range <- function(v) {
+  v <- v[is.finite(v)]
+  if (!length(v)) c(0, 0) else range(v, na.rm = TRUE)
+}
+finite_range <- function(...) {
+  v <- unlist(list(...))
+  v <- v[is.finite(v)]
+  if (!length(v)) c(0, 0) else range(v, na.rm = TRUE)
+}
+safe_pad <- function(r, frac = 0.06) {
+  dx <- diff(r)
+  if (!is.finite(dx) || dx <= 0) return(1e-6) else dx * frac
 }
 
-# union bounds of 95% normal ellipses across groups
+# ==== Ellipse union bounds (falls back to point ranges if needed) ====
 ellipse_union_bounds <- function(df_scores, group_var, level = 0.95, n = 240) {
   if (!nrow(df_scores)) return(list(x = c(0,0), y = c(0,0)))
   chi <- sqrt(qchisq(level, df = 2))
   xmins <- c(); xmaxs <- c(); ymins <- c(); ymaxs <- c()
-  for (lev in levels(df_scores[[group_var]])) {
+  levs <- levels(df_scores[[group_var]])
+  if (is.null(levs)) levs <- unique(df_scores[[group_var]])
+  for (lev in levs) {
     sub <- df_scores[df_scores[[group_var]] == lev, c("AX1","AX2"), drop = FALSE]
     if (nrow(sub) < 3 || any(!is.finite(as.matrix(sub)))) next
     S  <- tryCatch(stats::cov(sub, use = "complete.obs"), error = function(e) NULL)
@@ -42,11 +47,14 @@ ellipse_union_bounds <- function(df_scores, group_var, level = 0.95, n = 240) {
     ymins <- c(ymins, min(pts[,2], na.rm = TRUE))
     ymaxs <- c(ymaxs, max(pts[,2], na.rm = TRUE))
   }
+  if (!length(xmins) || !length(ymins)) {
+    return(list(x = safe_range(df_scores$AX1), y = safe_range(df_scores$AX2)))
+  }
   list(x = c(min(xmins, na.rm = TRUE), max(xmaxs, na.rm = TRUE)),
        y = c(min(ymins, na.rm = TRUE), max(ymaxs, na.rm = TRUE)))
 }
 
-# --- Aitchison (CLR) helpers ---
+# ==== Compositional helpers ====
 safe_closure <- function(X) {
   rs <- rowSums(X, na.rm = TRUE)
   zero_rows <- which(rs == 0 | !is.finite(rs))
@@ -56,7 +64,6 @@ safe_closure <- function(X) {
   }
   sweep(X, 1, rs, "/")
 }
-
 clr_transform <- function(X) {
   Xc <- safe_closure(X)
   for (i in seq_len(nrow(Xc))) {
@@ -77,63 +84,55 @@ clr_transform <- function(X) {
   sweep(L, 1, rowMeans(L), "-")
 }
 
-# ==== Read args / IO ====
+# ==== Args / IO ====
 # args <- commandArgs(trailingOnly = TRUE)
 args <- c("output/example")
-if (length(args) < 1) stop("Usage: Rscript pcoa.R <output_folder>")
+if (length(args) < 1) stop("Usage: Rscript pcoa_dual.R <output_folder>")
 output_folder <- args[1]
 
 metadata <- read_csv(file.path(output_folder, "metadata.csv"), show_col_types = FALSE) |>
   mutate(sample_id = as.character(sample_id))
 
-file_paths <- list.files(output_folder, pattern = "^normalized_.*\\.csv$", full.names = TRUE)
-file_list  <- setNames(file_paths, gsub("^normalized_|\\.csv$", "", basename(file_paths)))
-file_list  <- c(Raw = file.path(output_folder, "raw.csv"), file_list)
+# Collect files by suffix
+clr_files <- list.files(output_folder, pattern = "^normalized_.*_clr\\.csv$", full.names = TRUE)
+tss_files <- list.files(output_folder, pattern = "^normalized_.*_tss\\.csv$", full.names = TRUE)
 
-# ==== PCoA frames (scores + variance) ====
-compute_pcoa_frames <- function(df, metadata, model.vars = c("batchid","group"),
-                                n_axes = 5, dist_method = c("auto","bray","aitchison","euclidean")) {
-  dist_method <- match.arg(dist_method)
-  
+# Add baseline raw if present (will be transformed appropriately in functions)
+raw_fp <- file.path(output_folder, "raw.csv")
+if (file.exists(raw_fp)) {
+  clr_files <- c(raw_fp, clr_files)
+  tss_files <- c(raw_fp, tss_files)
+}
+
+# Named lists
+name_fun <- function(x, suffix) gsub(paste0("^normalized_|_", suffix, "\\.csv$"), "", basename(x))
+file_list_clr <- setNames(clr_files, ifelse(basename(clr_files) == "raw.csv", "Before correction", name_fun(clr_files, "clr")))
+file_list_tss <- setNames(tss_files, ifelse(basename(tss_files) == "raw.csv", "Before correction", name_fun(tss_files, "tss")))
+
+if (!length(file_list_clr)) stop("No CLR files found (expected 'normalized_*_clr.csv').")
+if (!length(file_list_tss)) stop("No TSS files found (expected 'normalized_*_tss.csv').")
+
+# ==== PCoA frames (Aitchison on CLR) ====
+compute_pcoa_frames_aitch <- function(df, metadata, model.vars = c("batchid","phenotype"),
+                                      n_axes = 5) {
   if (!"sample_id" %in% names(df)) {
     if (nrow(df) == nrow(metadata)) df$sample_id <- metadata$sample_id
     else stop("Input lacks 'sample_id' and row count != metadata; can't align samples.")
   }
   df  <- df %>% mutate(sample_id = as.character(sample_id))
   dfm <- inner_join(df, metadata, by = "sample_id")
-  
-  # numeric feature matrix
   feat_cols <- setdiff(names(df), "sample_id")
   X <- dfm %>% select(all_of(feat_cols)) %>% select(where(is.numeric))
   keep <- vapply(X, function(x) sd(x, na.rm = TRUE) > 0, logical(1))
   X <- as.matrix(X[, keep, drop = FALSE])
-  if (!ncol(X)) stop("No variable numeric features remain for PCoA.")
+  if (!ncol(X)) stop("No variable numeric features remain for PCoA (CLR).")
   
+  # If negatives exist, assume already CLR; else do CLR from positive data
   has_neg <- any(X < 0, na.rm = TRUE)
-  bray_ok <- (!has_neg) && requireNamespace("vegan", quietly = TRUE)
+  Xclr <- if (has_neg) sweep(X, 1, rowMeans(X, na.rm = TRUE), "-") else clr_transform(X)
+  d <- dist(Xclr, method = "euclidean")
   
-  # ---- choose distance: Bray if possible, else Aitchison (CLR + Euclidean) ----
-  method <- dist_method
-  if (dist_method == "auto") {
-    method <- if (bray_ok) "bray" else "aitchison"
-  } else if (dist_method == "bray" && !bray_ok) {
-    method <- "aitchison"
-  }
-  
-  if (method == "bray") {
-    d <- vegan::vegdist(X, method = "bray")
-  } else if (method == "aitchison") {
-    if (has_neg) {
-      Xclr <- sweep(X, 1, rowMeans(X, na.rm = TRUE), "-") # treat as already log-ratio
-    } else {
-      Xclr <- clr_transform(X)
-    }
-    d <- dist(Xclr, method = "euclidean")
-  } else {
-    d <- dist(X, method = "euclidean")
-  }
-  
-  # ---- PCoA ----
+  # PCoA
   if (requireNamespace("ape", quietly = TRUE)) {
     pc <- ape::pcoa(d)
     k  <- min(n_axes, ncol(pc$vectors))
@@ -151,58 +150,103 @@ compute_pcoa_frames <- function(df, metadata, model.vars = c("batchid","group"),
   
   axis.min <- apply(sc, 2, min, na.rm = TRUE)
   axis.max <- apply(sc, 2, max, na.rm = TRUE)
-  metric.df <- data.frame(
-    axis.min      = as.numeric(axis.min),
-    axis.max      = as.numeric(axis.max),
-    var.explained = as.numeric(var_expl),
-    stringsAsFactors = FALSE
-  )
-  
+  metric.df <- data.frame(axis.min = as.numeric(axis.min),
+                          axis.max = as.numeric(axis.max),
+                          var.explained = as.numeric(var_expl))
   plot.df <- data.frame(sample_id = dfm$sample_id, as.data.frame(sc), check.names = FALSE)
   colnames(plot.df)[2:(k + 1)] <- paste0("PCo", seq_len(k))
   
-  # attach covariates with consistent factor levels from metadata
   present <- intersect(model.vars, names(dfm))
   for (v in present) {
     levs <- unique(as.character(metadata[[v]]))
     plot.df[[v]] <- factor(as.character(dfm[[v]]), levels = levs)
   }
-  
   list(plot.df = plot.df, metric.df = metric.df, used.vars = present)
 }
 
-# ==== PCoA panel (scatter + marginal densities; legend bottom, horizontal) ====
-pcoa_panel <- function(plot.df, metric.df, model.vars, axes = c(1,2), label = NULL) {
+# ==== PCoA frames (Bray–Curtis on TSS) ====
+compute_pcoa_frames_bray <- function(df, metadata, model.vars = c("batchid","phenotype"),
+                                     n_axes = 5) {
+  if (!"sample_id" %in% names(df)) {
+    if (nrow(df) == nrow(metadata)) df$sample_id <- metadata$sample_id
+    else stop("Input lacks 'sample_id' and row count != metadata; can't align samples.")
+  }
+  df  <- df %>% mutate(sample_id = as.character(sample_id))
+  dfm <- inner_join(df, metadata, by = "sample_id")
+  feat_cols <- setdiff(names(df), "sample_id")
+  X <- dfm %>% select(all_of(feat_cols)) %>% select(where(is.numeric)) %>% as.matrix()
+  
+  # Ensure non-negative & close rows to TSS (proportions)
+  X[!is.finite(X)] <- 0
+  X[X < 0] <- 0
+  Xtss <- safe_closure(X)
+  
+  # Bray–Curtis (vegan::vegdist)
+  d <- vegan::vegdist(Xtss, method = "bray")
+  
+  # PCoA with Cailliez correction (robust for non-Euclidean)
+  if (requireNamespace("ape", quietly = TRUE)) {
+    pc <- ape::pcoa(as.matrix(d), correction = "cailliez")
+    k  <- min(n_axes, ncol(pc$vectors))
+    sc <- pc$vectors[, 1:k, drop = FALSE]
+    vals <- pc$values
+    rel  <- if ("Rel_corr_eig" %in% names(vals)) vals$Rel_corr_eig else vals$Relative_eig
+    var_expl <- round(100 * rel[1:k], 2)
+  } else {
+    cm <- cmdscale(as.matrix(d), k = n_axes, eig = TRUE, add = TRUE)
+    sc <- cm$points
+    k  <- ncol(sc)
+    rel_eig <- cm$eig / sum(cm$eig[cm$eig > 0], na.rm = TRUE)
+    var_expl <- round(100 * rel_eig[1:k], 2)
+  }
+  
+  axis.min <- apply(sc, 2, min, na.rm = TRUE)
+  axis.max <- apply(sc, 2, max, na.rm = TRUE)
+  metric.df <- data.frame(axis.min = as.numeric(axis.min),
+                          axis.max = as.numeric(axis.max),
+                          var.explained = as.numeric(var_expl))
+  plot.df <- data.frame(sample_id = dfm$sample_id, as.data.frame(sc), check.names = FALSE)
+  colnames(plot.df)[2:(k + 1)] <- paste0("PCo", seq_len(k))
+  
+  present <- intersect(model.vars, names(dfm))
+  for (v in present) {
+    levs <- unique(as.character(metadata[[v]]))
+    plot.df[[v]] <- factor(as.character(dfm[[v]]), levels = levs)
+  }
+  list(plot.df = plot.df, metric.df = metric.df, used.vars = present)
+}
+
+# ==== PCoA panel (scatter + marginals) with GLOBAL limit overrides ====
+pcoa_panel <- function(plot.df, metric.df, model.vars, axes = c(1,2), label = NULL,
+                       xlim_override = NULL, ylim_override = NULL, palette_name = "Batch") {
   mbecCols <- c("#9467bd","#BCBD22","#2CA02C","#E377C2","#1F77B4","#FF7F0E",
                 "#AEC7E8","#FFBB78","#98DF8A","#D62728","#FF9896","#C5B0D5",
                 "#8C564B","#C49C94","#F7B6D2","#7F7F7F","#C7C7C7","#DBDB8D",
                 "#17BECF","#9EDAE5")
-  
   var.color <- model.vars[1]
   var.shape <- ifelse(length(model.vars) >= 2, model.vars[2], NA_character_)
-  
-  xcol <- paste0("PCo", axes[1])
-  ycol <- paste0("PCo", axes[2])
+  xcol <- paste0("PCo", axes[1]); ycol <- paste0("PCo", axes[2])
   x.label <- paste0(xcol, ": ", metric.df$var.explained[axes[1]], "% expl.var")
   y.label <- paste0(ycol, ": ", metric.df$var.explained[axes[2]], "% expl.var")
   if (!is.null(label)) x.label <- paste(label, "-", x.label)
   
-  # zoomed-out limits based on union of ellipses + points
   scores <- data.frame(
     AX1 = plot.df[[xcol]],
     AX2 = plot.df[[ycol]],
     batch = if (var.color %in% names(plot.df)) droplevels(plot.df[[var.color]]) else factor(1)
   )
-  ell_bounds <- ellipse_union_bounds(scores, "batch", level = 0.95, n = 240)
-  xr <- range(scores$AX1, na.rm = TRUE); yr <- range(scores$AX2, na.rm = TRUE)
-  xlim <- range(c(xr, ell_bounds$x)); ylim <- range(c(yr, ell_bounds$y))
-  pad_x <- diff(xlim) * 0.06; pad_y <- diff(ylim) * 0.06
+  if (!is.factor(scores$batch)) scores$batch <- factor(scores$batch)
+  eb <- ellipse_union_bounds(scores, "batch", level = 0.95, n = 240)
+  xr <- safe_range(scores$AX1); yr <- safe_range(scores$AX2)
+  xlim <- finite_range(xr, eb$x); ylim <- finite_range(yr, eb$y)
+  pad_x <- safe_pad(xlim, 0.06); pad_y <- safe_pad(ylim, 0.06)
   xlim <- c(xlim[1] - pad_x, xlim[2] + pad_x)
   ylim <- c(ylim[1] - pad_y, ylim[2] + pad_y)
+  if (!is.null(xlim_override)) xlim <- xlim_override
+  if (!is.null(ylim_override)) ylim <- ylim_override
   
   pmar <- margin(10, 16, 10, 16)
   
-  # main scatter
   pMain <- ggplot(plot.df, aes(x = !!sym(xcol), y = !!sym(ycol), colour = !!sym(var.color))) +
     {
       if (!is.na(var.shape) && var.shape %in% names(plot.df)) {
@@ -214,7 +258,7 @@ pcoa_panel <- function(plot.df, metric.df, model.vars, axes = c(1,2), label = NU
     stat_ellipse(aes(group = !!sym(var.color)),
                  type = "norm", level = 0.95,
                  linewidth = 0.7, linetype = 1, show.legend = FALSE, na.rm = TRUE) +
-    scale_color_manual(values = mbecCols, name = "Batch") +
+    scale_color_manual(values = mbecCols, name = palette_name) +
     {
       if (!is.na(var.shape) && var.shape %in% names(plot.df)) {
         shape_vals <- c(0,1,2,3,6,8,15,16,17,23,25,4,5,9)
@@ -224,10 +268,8 @@ pcoa_panel <- function(plot.df, metric.df, model.vars, axes = c(1,2), label = NU
         } else scale_shape_discrete(name = "Phenotype")
       }
     } +
-    guides(
-      colour = guide_legend(order = 1, nrow = 1, byrow = TRUE),  # batches on one long row
-      shape  = guide_legend(order = 2, nrow = 1)                 # phenotype under it (after collect)
-    ) +
+    guides(colour = guide_legend(order = 1, nrow = 1, byrow = TRUE),
+           shape  = guide_legend(order = 2, nrow = 1)) +
     labs(title = NULL) +
     scale_x_continuous(limits = xlim, expand = expansion(mult = c(0.02, 0.02))) +
     scale_y_continuous(limits = ylim, expand = expansion(mult = c(0.02, 0.02))) +
@@ -243,7 +285,6 @@ pcoa_panel <- function(plot.df, metric.df, model.vars, axes = c(1,2), label = NU
       plot.margin = pmar
     )
   
-  # top density (Axis 1)
   pTop <- ggplot(plot.df, aes(x = !!sym(xcol))) +
     {
       if (!is.na(var.shape) && var.shape %in% names(plot.df)) {
@@ -268,7 +309,6 @@ pcoa_panel <- function(plot.df, metric.df, model.vars, axes = c(1,2), label = NU
       plot.margin = pmar
     )
   
-  # right density (Axis 2), rotated so density extends RIGHT; same vertical scale as main
   pRight <- ggplot(plot.df, aes(y = !!sym(ycol))) +
     {
       if (!is.na(var.shape) && var.shape %in% names(plot.df)) {
@@ -294,10 +334,9 @@ pcoa_panel <- function(plot.df, metric.df, model.vars, axes = c(1,2), label = NU
       axis.ticks = element_blank(),
       legend.position = "none",
       axis.title.y = element_blank(),
-      plot.margin = pmar
+      plot.margin = margin(10, 16, 10, 16)
     )
   
-  # assemble panel (legend will be collected globally)
   design <- "
 A#
 CB
@@ -306,33 +345,61 @@ CB
 }
 
 # ==== Params ====
-dist_method <- "auto"  # "auto" | "bray" | "aitchison" | "euclidean"
-batch_var   <- "batchid"
-shape_var   <- guess_shape_var(metadata, batch_var)
-model_vars  <- if (is.na(shape_var)) c(batch_var) else c(batch_var, shape_var)
-message(sprintf("PCoA settings: distance=%s, color=%s%s",
-                dist_method, batch_var,
+batch_var  <- "batchid"
+shape_var  <- "phenotype"
+model_vars <- if (is.na(shape_var)) c(batch_var) else c(batch_var, shape_var)
+axes_to_plot <- c(1, 2)
+ncol_grid <- 2
+SYMMETRIC_AXES <- FALSE  # set TRUE to force symmetry about 0 (optional)
+
+# =========================
+# Set 1: Aitchison (CLR)
+# =========================
+message(sprintf("PCoA (Aitchison on CLR): color=%s%s",
+                batch_var,
                 if (is.na(shape_var)) " (shape: none)" else paste0(", shape=", shape_var)))
 
-# ==== Build + save ====
-axes_to_plot <- c(1, 2)
-plots <- list()
+frames_cache_clr <- list()
+global_x_clr <- NULL; global_y_clr <- NULL
 
-for (nm in names(file_list)) {
-  cat("Processing (PCoA):", nm, "\n")
-  df <- read_csv(file_list[[nm]], show_col_types = FALSE)
+for (nm in names(file_list_clr)) {
+  cat("Computing CLR frames:", nm, "\n")
+  df <- read_csv(file_list_clr[[nm]], show_col_types = FALSE)
+  fr <- compute_pcoa_frames_aitch(df, metadata, model.vars = model_vars, n_axes = max(axes_to_plot))
+  frames_cache_clr[[nm]] <- fr
   
-  frames <- compute_pcoa_frames(df, metadata, model.vars = model_vars,
-                                n_axes = max(axes_to_plot), dist_method = dist_method)
-  plt <- pcoa_panel(frames$plot.df, frames$metric.df, frames$used.vars,
-                    axes = axes_to_plot, label = nm)
+  xcol <- paste0("PCo", axes_to_plot[1]); ycol <- paste0("PCo", axes_to_plot[2])
+  scores <- data.frame(
+    AX1 = fr$plot.df[[xcol]],
+    AX2 = fr$plot.df[[ycol]],
+    batch = if (batch_var %in% names(fr$plot.df)) droplevels(fr$plot.df[[batch_var]]) else factor(1)
+  )
+  if (!is.factor(scores$batch)) scores$batch <- factor(scores$batch)
+  xr <- safe_range(scores$AX1); yr <- safe_range(scores$AX2)
+  eb <- ellipse_union_bounds(scores, "batch", level = 0.95, n = 240)
   
-  plots[[nm]] <- plt
+  global_x_clr <- if (is.null(global_x_clr)) finite_range(xr, eb$x) else finite_range(global_x_clr, xr, eb$x)
+  global_y_clr <- if (is.null(global_y_clr)) finite_range(yr, eb$y) else finite_range(global_y_clr, yr, eb$y)
 }
 
-# Combine ALL panels and keep ONE legend at bottom (horizontal)
-ncol_grid <- 2
-combined <- wrap_plots(plots, ncol = ncol_grid) +
+pad_x <- safe_pad(global_x_clr, 0.06); pad_y <- safe_pad(global_y_clr, 0.06)
+xlim_global_clr <- c(global_x_clr[1] - pad_x, global_x_clr[2] + pad_x)
+ylim_global_clr <- c(global_y_clr[1] - pad_y, global_y_clr[2] + pad_y)
+if (isTRUE(SYMMETRIC_AXES)) {
+  x_half <- max(abs(xlim_global_clr)); y_half <- max(abs(ylim_global_clr))
+  xlim_global_clr <- c(-x_half, x_half); ylim_global_clr <- c(-y_half, y_half)
+}
+
+plots_clr <- lapply(names(file_list_clr), function(nm) {
+  fr <- frames_cache_clr[[nm]]
+  pcoa_panel(fr$plot.df, fr$metric.df, model_vars,
+             axes = axes_to_plot, label = nm,
+             xlim_override = xlim_global_clr, ylim_override = ylim_global_clr,
+             palette_name = "Batch")
+})
+names(plots_clr) <- names(file_list_clr)
+
+combined_clr <- wrap_plots(plots_clr, ncol = ncol_grid) +
   plot_layout(guides = "collect") &
   theme(
     legend.position  = "bottom",
@@ -341,62 +408,174 @@ combined <- wrap_plots(plots, ncol = ncol_grid) +
     plot.margin = margin(8, 14, 8, 14)
   )
 
-ggsave(file.path(output_folder, "pcoa.png"),
-       plot = combined, width = 9.5 * ncol_grid, height = 6 * ceiling(length(plots) / ncol_grid),
+ggsave(file.path(output_folder, "pcoa_aitchison.png"),
+       plot = combined_clr, width = 9.5 * ncol_grid, height = 6 * ceiling(length(plots_clr) / ncol_grid),
        dpi = 300)
-ggsave(file.path(output_folder, "pcoa.tif"),
-       plot = combined, width = 9.5 * ncol_grid, height = 6 * ceiling(length(plots) / ncol_grid),
+ggsave(file.path(output_folder, "pcoa_aitchison.tif"),
+       plot = combined_clr, width = 9.5 * ncol_grid, height = 6 * ceiling(length(plots_clr) / ncol_grid),
        dpi = 300, compression = "lzw")
 
+# =========================
+# Set 2: Bray–Curtis (TSS)
+# =========================
+message(sprintf("PCoA (Bray–Curtis on TSS): color=%s%s",
+                batch_var,
+                if (is.na(shape_var)) " (shape: none)" else paste0(", shape=", shape_var)))
 
-# Function to compute the centroid of each batch in the PCoA space
-compute_centroids <- function(pcoa_scores, batch_var) {
-  # Compute centroids (mean of each batch group in PCoA space)
-  centroids <- pcoa_scores %>%
-    group_by(!!sym(batch_var)) %>%
-    summarise(PCo1 = mean(PCo1), PCo2 = mean(PCo2))
+frames_cache_tss <- list()
+global_x_tss <- NULL; global_y_tss <- NULL
+
+for (nm in names(file_list_tss)) {
+  cat("Computing TSS/Bray frames:", nm, "\n")
+  df <- read_csv(file_list_tss[[nm]], show_col_types = FALSE)
+  fr <- compute_pcoa_frames_bray(df, metadata, model.vars = model_vars, n_axes = max(axes_to_plot))
+  frames_cache_tss[[nm]] <- fr
   
-  return(centroids)
+  xcol <- paste0("PCo", axes_to_plot[1]); ycol <- paste0("PCo", axes_to_plot[2])
+  scores <- data.frame(
+    AX1 = fr$plot.df[[xcol]],
+    AX2 = fr$plot.df[[ycol]],
+    batch = if (batch_var %in% names(fr$plot.df)) droplevels(fr$plot.df[[batch_var]]) else factor(1)
+  )
+  if (!is.factor(scores$batch)) scores$batch <- factor(scores$batch)
+  xr <- safe_range(scores$AX1); yr <- safe_range(scores$AX2)
+  eb <- ellipse_union_bounds(scores, "batch", level = 0.95, n = 240)
+  
+  global_x_tss <- if (is.null(global_x_tss)) finite_range(xr, eb$x) else finite_range(global_x_tss, xr, eb$x)
+  global_y_tss <- if (is.null(global_y_tss)) finite_range(yr, eb$y) else finite_range(global_y_tss, yr, eb$y)
 }
 
-# Function to compute the distance between centroids of different batches
+pad_x <- safe_pad(global_x_tss, 0.06); pad_y <- safe_pad(global_y_tss, 0.06)
+xlim_global_tss <- c(global_x_tss[1] - pad_x, global_x_tss[2] + pad_x)
+ylim_global_tss <- c(global_y_tss[1] - pad_y, global_y_tss[2] + pad_y)
+if (isTRUE(SYMMETRIC_AXES)) {
+  x_half <- max(abs(xlim_global_tss)); y_half <- max(abs(ylim_global_tss))
+  xlim_global_tss <- c(-x_half, x_half); ylim_global_tss <- c(-y_half, y_half)
+}
+
+plots_tss <- lapply(names(file_list_tss), function(nm) {
+  fr <- frames_cache_tss[[nm]]
+  pcoa_panel(fr$plot.df, fr$metric.df, model_vars,
+             axes = axes_to_plot, label = nm,
+             xlim_override = xlim_global_tss, ylim_override = ylim_global_tss,
+             palette_name = "Batch")
+})
+names(plots_tss) <- names(file_list_tss)
+
+combined_tss <- wrap_plots(plots_tss, ncol = ncol_grid) +
+  plot_layout(guides = "collect") &
+  theme(
+    legend.position  = "bottom",
+    legend.direction = "horizontal",
+    legend.box       = "vertical",
+    plot.margin = margin(8, 14, 8, 14)
+  )
+
+ggsave(file.path(output_folder, "pcoa_braycurtis.png"),
+       plot = combined_tss, width = 9.5 * ncol_grid, height = 6 * ceiling(length(plots_tss) / ncol_grid),
+       dpi = 300)
+ggsave(file.path(output_folder, "pcoa_braycurtis.tif"),
+       plot = combined_tss, width = 9.5 * ncol_grid, height = 6 * ceiling(length(plots_tss) / ncol_grid),
+       dpi = 300, compression = "lzw")
+
+# =========================
+# Unified PCoA ranking (Aitchison + Bray combined)
+# - uses ONLY PCoA outputs you already computed:
+#   frames_cache_clr (Aitchison/CLR) and frames_cache_tss (Bray/TSS)
+# - ranks methods by a combined score:
+#     per-geometry score = (1 / (1 + batch_centroid_distance)) * coverage
+#     where coverage = (PCo1+PCo2 variance explained)/100
+#   combined score = geometric mean of available per-geometry scores
+#   (higher = better; smaller batch distance + higher coverage → better)
+# =========================
+
+compute_centroids_pcoa <- function(scores, batch_var = "batchid") {
+  scores %>%
+    dplyr::group_by(!!rlang::sym(batch_var)) %>%
+    dplyr::summarise(PCo1 = mean(PCo1), PCo2 = mean(PCo2), .groups = "drop")
+}
 compute_centroid_distances <- function(centroids) {
-  # Calculate pairwise Euclidean distances between centroids
-  dist_matrix <- dist(centroids[, c("PCo1", "PCo2")], method = "euclidean")
-  return(mean(dist_matrix))  # Average distance between batch centroids
+  if (nrow(centroids) < 2) return(NA_real_)
+  as.numeric(mean(dist(centroids[, c("PCo1", "PCo2")], method = "euclidean")))
+}
+pcoa_metric_score <- function(batch_distance, coverage) {
+  if (is.na(batch_distance) || is.na(coverage)) return(NA_real_)
+  coverage <- max(0, min(1, coverage))                 # clamp to [0,1]
+  (1 / (1 + batch_distance)) * coverage                # higher = better
 }
 
-# Initialize a data frame to store results
-rank_results <- tibble(Method = character(), Batch_Distance = numeric())
+methods_clr <- names(frames_cache_clr)
+methods_tss <- names(frames_cache_tss)
+all_methods <- union(methods_clr, methods_tss)
 
-# Loop over all methods to compute the distance between batch centroids
-for (method_name in names(file_list)) {
-  cat("Processing:", method_name, "\n")
+rank_tbl <- dplyr::tibble(
+  Method = character(),
+  Batch_Distance_Aitchison = numeric(),
+  Coverage_Aitchison       = numeric(),
+  Score_Aitchison          = numeric(),
+  Batch_Distance_Bray      = numeric(),
+  Coverage_Bray            = numeric(),
+  Score_Bray               = numeric(),
+  Combined_Score           = numeric()
+)
+
+for (m in all_methods) {
+  # ----- Aitchison/CLR -----
+  D_a <- NA_real_; Cov_a <- NA_real_; S_a <- NA_real_
+  if (m %in% methods_clr) {
+    fr_a <- frames_cache_clr[[m]]
+    # centroid distance on PCo1/PCo2
+    md_a <- metadata[match(fr_a$plot.df$sample_id, metadata$sample_id), , drop = FALSE]
+    scores_a <- fr_a$plot.df %>%
+      dplyr::select(sample_id, PCo1, PCo2) %>%
+      dplyr::mutate(batchid = factor(md_a$batchid))
+    cents_a <- compute_centroids_pcoa(scores_a, "batchid")
+    D_a <- compute_centroid_distances(cents_a)
+    # coverage from var.explained
+    ve_a <- fr_a$metric.df$var.explained
+    Cov_a <- sum(ve_a[1:min(2, length(ve_a))], na.rm = TRUE) / 100
+    S_a <- pcoa_metric_score(D_a, Cov_a)
+  }
   
-  # Read in the data for the current method
-  df <- read_csv(file_list[[method_name]], show_col_types = FALSE)
+  # ----- Bray–Curtis/TSS -----
+  D_b <- NA_real_; Cov_b <- NA_real_; S_b <- NA_real_
+  if (m %in% methods_tss) {
+    fr_b <- frames_cache_tss[[m]]
+    md_b <- metadata[match(fr_b$plot.df$sample_id, metadata$sample_id), , drop = FALSE]
+    scores_b <- fr_b$plot.df %>%
+      dplyr::select(sample_id, PCo1, PCo2) %>%
+      dplyr::mutate(batchid = factor(md_b$batchid))
+    cents_b <- compute_centroids_pcoa(scores_b, "batchid")
+    D_b <- compute_centroid_distances(cents_b)
+    ve_b <- fr_b$metric.df$var.explained
+    Cov_b <- sum(ve_b[1:min(2, length(ve_b))], na.rm = TRUE) / 100
+    S_b <- pcoa_metric_score(D_b, Cov_b)
+  }
   
-  # Compute PCoA on the data
-  frames <- compute_pcoa_frames(df, metadata, model.vars = c("batchid"),
-                                n_axes = 2, dist_method = "auto")
+  # Geometric mean of available per-geometry scores (higher = better)
+  Combined <- dplyr::case_when(
+    !is.na(S_a) && !is.na(S_b) ~ sqrt(S_a * S_b),
+    !is.na(S_a)                ~ S_a,
+    !is.na(S_b)                ~ S_b,
+    TRUE                       ~ NA_real_
+  )
   
-  # Get PCoA scores and batch information
-  pcoa_scores <- frames$plot.df %>% select(sample_id, PCo1, PCo2, batchid)
-  
-  # Compute centroids for each batch
-  centroids <- compute_centroids(pcoa_scores, batch_var = "batchid")
-  
-  # Compute the distance between batch centroids
-  batch_distance <- compute_centroid_distances(centroids)
-  
-  # Store the result
-  rank_results <- bind_rows(rank_results, tibble(Method = method_name, Batch_Distance = batch_distance))
+  rank_tbl <- dplyr::bind_rows(rank_tbl, dplyr::tibble(
+    Method = m,
+    Batch_Distance_Aitchison = D_a,
+    Coverage_Aitchison       = Cov_a,
+    Score_Aitchison          = S_a,
+    Batch_Distance_Bray      = D_b,
+    Coverage_Bray            = Cov_b,
+    Score_Bray               = S_b,
+    Combined_Score           = Combined
+  ))
 }
 
-# Rank the methods based on batch separation (distance between centroids)
-ranked_methods <- rank_results %>%
-  arrange(desc(Batch_Distance)) %>%
-  mutate(Rank = row_number())
+ranked_pcoa_unified <- rank_tbl %>%
+  dplyr::arrange(dplyr::desc(Combined_Score)) %>%
+  dplyr::mutate(Rank = dplyr::row_number())
 
-# Display the ranked methods based on batch separation
-ranked_methods
+print(ranked_pcoa_unified, n = nrow(ranked_pcoa_unified))
+readr::write_csv(ranked_pcoa_unified, file.path(output_folder, "pcoa_ranking.csv"))
+
