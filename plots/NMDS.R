@@ -65,10 +65,12 @@ clr_transform <- function(X) {
 }
 
 # ==== Args / IO ====
-# args <- commandArgs(trailingOnly = TRUE)
-args <- c("output/example")
-if (length(args) < 1) stop("Usage: Rscript nmds_dual.R <output_folder>")
+args <- commandArgs(trailingOnly = TRUE)
+if (length(args) < 1) {
+  args <- "output/example"  # default folder for quick runs
+}
 output_folder <- args[1]
+if (!dir.exists(output_folder)) dir.create(output_folder, recursive = TRUE)
 
 metadata <- read_csv(file.path(output_folder, "metadata.csv"), show_col_types = FALSE) |>
   mutate(sample_id = as.character(sample_id))

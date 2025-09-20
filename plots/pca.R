@@ -50,10 +50,12 @@ ellipse_union_bounds <- function(df_scores, group_var, level = 0.95, n = 240) {
 }
 
 # ==== Read UID argument ====
-# args <- commandArgs(trailingOnly = TRUE)
-args <- c("output/example")
-if (length(args) < 1) stop("Usage: Rscript pca.R <output_folder>")
+args <- commandArgs(trailingOnly = TRUE)
+if (length(args) < 1) {
+  args <- "output/example"  # default folder for quick runs
+}
 output_folder <- args[1]
+if (!dir.exists(output_folder)) dir.create(output_folder, recursive = TRUE)
 
 # ==== Read Metadata ====
 metadata <- read_csv(file.path(output_folder, "metadata.csv"), show_col_types = FALSE) |>

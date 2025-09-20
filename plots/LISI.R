@@ -17,7 +17,11 @@ has_repel <- requireNamespace("ggrepel", quietly = TRUE)
 
 # ------------------------------- CLI options ------------------------------------
 args <- commandArgs(trailingOnly = TRUE)
-output_folder <- if (length(args) && !grepl("^--", args[1])) args[1] else "output/example"
+if (length(args) < 1) {
+  args <- "output/example"  # default folder for quick runs
+}
+output_folder <- args[1]
+if (!dir.exists(output_folder)) dir.create(output_folder, recursive = TRUE)
 
 # defaults (can be overridden via flags):
 opt_k       <- 30          # local neighborhood size

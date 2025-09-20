@@ -1,17 +1,20 @@
-# ================= AUROC curves (CLR only) — per method, with AUC ranking =================
+# ================= AUROC curves (CLR only) - per method, with AUC ranking =================
 suppressPackageStartupMessages({
   library(readr)
   library(dplyr)
   library(ggplot2)
   library(caret)
+  library(randomForest)
   library(pROC)
 })
 
 # --------- Args / config ---------
-# args <- commandArgs(trailingOnly = TRUE)
-args <- c("output/example")     # change/remove for CLI
-if (length(args) < 1) stop("Usage: Rscript auroc_clr.R <output_folder>")
+args <- commandArgs(trailingOnly = TRUE)
+if (length(args) < 1) {
+  args <- "output/example"  # default folder for quick runs
+}
 output_folder <- args[1]
+if (!dir.exists(output_folder)) dir.create(output_folder, recursive = TRUE)
 
 PHENO_COL <- "phenotype"  # binary outcome in metadata.csv (0/1 or 2-level factor)
 CV_FOLDS  <- 5
@@ -26,7 +29,7 @@ if (!PHENO_COL %in% names(metadata))
   stop(sprintf("Phenotype column '%s' not found in metadata.csv", PHENO_COL))
 
 if (is.numeric(metadata[[PHENO_COL]]) && dplyr::n_distinct(metadata[[PHENO_COL]]) == 2) {
-  # numeric 0/1 → 1 = positive
+  # numeric 0/1 -> 1 = positive
   metadata <- metadata |>
     mutate(.outcome = factor(ifelse(.data[[PHENO_COL]] == 1, "pos", "neg"),
                              levels = c("pos","neg")))
@@ -58,7 +61,7 @@ safe_numeric_matrix <- function(df) {
   as.matrix(num[, ok, drop = FALSE])
 }
 
-fit_glmnet_cv <- function(df_features, y_factor, folds = 5, reps = 5) {
+fit_rf_cv <- function(df_features, y_factor, folds = 5, reps = 5) {
   # df_features: data.frame of numeric features; y_factor: factor with positive level FIRST
   train_df <- as.data.frame(df_features)
   train_df$.outcome <- droplevels(y_factor)
@@ -73,12 +76,15 @@ fit_glmnet_cv <- function(df_features, y_factor, folds = 5, reps = 5) {
   )
   
   set.seed(42)
-  train(.outcome ~ ., data = train_df,
-        method = "glmnet",
-        preProcess = c("center","scale"),
-        metric = "ROC",
-        trControl = ctrl,
-        tuneLength = 10)
+  train(
+    .outcome ~ ., data = train_df,
+    method = "rf",
+    metric = "ROC",
+    trControl = ctrl,
+    tuneLength = 5,
+    importance = TRUE
+  )
+
 }
 
 # --------- Train per method, compute AUROC & ROC coords ---------
@@ -116,7 +122,7 @@ for (nm in names(file_list)) {
     next
   }
   
-  fit <- tryCatch(fit_glmnet_cv(X, y, folds = CV_FOLDS, reps = CV_REPS),
+  fit <- tryCatch(fit_rf_cv(X, y, folds = CV_FOLDS, reps = CV_REPS),
                   error = function(e) NULL)
   if (is.null(fit)) {
     warning(sprintf("Skipping %s: model fitting failed.", nm))
@@ -158,7 +164,7 @@ for (nm in names(file_list)) {
 roc_df <- dplyr::bind_rows(roc_rows)
 auc_tbl <- dplyr::bind_rows(auc_rows) %>% arrange(desc(AUC)) %>% mutate(Rank = row_number())
 
-# Build "Method (AUC=…)" labels in AUC order
+# Build "Method (AUC=...)" labels in AUC order
 label_map <- setNames(
   sprintf("%s (AUC=%.3f)", auc_tbl$Method, auc_tbl$AUC),
   auc_tbl$Method

@@ -9,10 +9,12 @@ suppressPackageStartupMessages({
 })
 
 # ==== IO ====
-# args <- commandArgs(trailingOnly = TRUE)
-args <- c("output/example")
-if (length(args) < 1) stop("Usage: Rscript dissimilarity_heatmaps_dual.R <output_folder>")
+args <- commandArgs(trailingOnly = TRUE)
+if (length(args) < 1) {
+  args <- "output/example"  # default folder for quick runs
+}
 output_folder <- args[1]
+if (!dir.exists(output_folder)) dir.create(output_folder, recursive = TRUE)
 
 # ==== Metadata ====
 metadata <- read_csv(file.path(output_folder, "metadata.csv"), show_col_types = FALSE) |>
@@ -198,7 +200,7 @@ upper_heatmap_panel <- function(Db, ord, title_label, fill_label,
     )
   
   ggplot(long, aes(x = batch2, y = batch1, fill = val)) +
-    geom_tile() +
+    geom_tile(width = 0.92, height = 0.92) +
     geom_text(aes(label = label, colour = txt_col), size = 3) +
     scale_colour_identity(guide = "none") +
     scale_fill_viridis_c(

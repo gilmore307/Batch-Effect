@@ -7,10 +7,12 @@ suppressPackageStartupMessages({
 })
 
 # --------- Args / config ---------
-# args <- commandArgs(trailingOnly = TRUE)
-args <- c("output/example")  # change/remove for CLI
-if (length(args) < 1) stop("Usage: Rscript alignment_score_clr.R <output_folder>")
+args <- commandArgs(trailingOnly = TRUE)
+if (length(args) < 1) {
+  args <- "output/example"  # default folder for quick runs
+}
 output_folder <- args[1]
+if (!dir.exists(output_folder)) dir.create(output_folder, recursive = TRUE)
 
 K_NEIGHBORS   <- 10     # k in kNN
 VAR_PROP_MIN  <- 0.95   # keep PCs explaining at least 95% variance

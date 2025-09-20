@@ -8,10 +8,12 @@ suppressPackageStartupMessages({
 })
 
 # ----------------- Args / IO -----------------
-# args <- commandArgs(trailingOnly = TRUE)
-args <- c("output/example")  # <-- change/remove for CLI use
-if (length(args) < 1) stop("Usage: Rscript r2_boxplot_anova_dual.R <output_folder>")
+args <- commandArgs(trailingOnly = TRUE)
+if (length(args) < 1) {
+  args <- "output/example"  # default folder for quick runs
+}
 output_folder <- args[1]
+if (!dir.exists(output_folder)) dir.create(output_folder, recursive = TRUE)
 
 metadata <- read_csv(file.path(output_folder, "metadata.csv"), show_col_types = FALSE) |>
   mutate(sample_id = as.character(sample_id))
@@ -164,7 +166,7 @@ tidy_long <- function(df, method_levels) {
 r2_long_clr <- tidy_long(r2_long_clr, method_levels_clr)
 r2_long_tss <- tidy_long(r2_long_tss, method_levels_tss)
 
-# ----------------- Figure (Figure-7 style boxes) -----------------
+# ----------------- Figure -----------------
 box_cols <- c(Batch = "#FF7F0E", Treatment = "#BDBDBD")
 
 make_boxplot <- function(r2_long_df, method_levels, title) {
@@ -174,7 +176,14 @@ make_boxplot <- function(r2_long_df, method_levels, title) {
   
   ggplot(r2_long_df, aes(x = Effect, y = R2, fill = Effect)) +
     geom_boxplot(width = 0.7, outlier.size = 0.7) +   # <-- dot, not underscore
-    stat_boxplot(geom = "errorbar", width = 0.35) +
+    stat_boxplot(
+      aes(ymin = after_stat(ymax), ymax = after_stat(ymax)),
+      geom = "errorbar", width = 0.35
+    ) +
+    stat_boxplot(
+      aes(ymin = after_stat(ymin), ymax = after_stat(ymin)),
+      geom = "errorbar", width = 0.35
+    )+
     scale_fill_manual(values = c(Batch = "#FF7F0E", Treatment = "#BDBDBD"),
                       name = "Effect", drop = FALSE) +
     facet_grid(. ~ Method, scales = "free_x", space = "free_x") +

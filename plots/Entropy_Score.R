@@ -8,9 +8,10 @@ suppressPackageStartupMessages({
 })
 
 # --------- Args / config ---------
-# args <- commandArgs(trailingOnly = TRUE)
-args <- c("output/example")  # change/remove for CLI
-if (length(args) < 1) stop("Usage: Rscript ebm_clr_only.R <output_folder>")
+args <- commandArgs(trailingOnly = TRUE)
+if (length(args) < 1) {
+  args <- "output/example"  # default folder for quick runs
+}
 output_folder <- args[1]
 if (!dir.exists(output_folder)) dir.create(output_folder, recursive = TRUE)
 
