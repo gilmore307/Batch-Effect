@@ -1,4 +1,4 @@
-# ===================== One-way ANOVA R^2 boxplots (Batch vs Treatment) — CLR *and* TSS =====================
+# ===================== One-way ANOVA R^2 boxplots (Batch vs Treatment) - CLR *and* TSS =====================
 suppressPackageStartupMessages({
   library(ggplot2)
   library(readr)
