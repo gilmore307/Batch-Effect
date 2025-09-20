@@ -16,9 +16,10 @@ if (length(args) < 1) {
 output_folder <- args[1]
 if (!dir.exists(output_folder)) dir.create(output_folder, recursive = TRUE)
 
-PHENO_COL <- "phenotype"  # binary outcome in metadata.csv (0/1 or 2-level factor)
-CV_FOLDS  <- 5
-CV_REPS   <- 5
+PHENO_COL     <- "phenotype"  # binary outcome in metadata.csv (0/1 or 2-level factor)
+CV_FOLDS      <- 5
+CV_REPS       <- 5
+AUC_THRESHOLD <- 0.70         # baseline-only: if AUC < threshold, recommend correction
 set.seed(42)
 
 # --------- Load metadata & make .outcome (positive class first) ---------
@@ -42,16 +43,20 @@ if (is.numeric(metadata[[PHENO_COL]]) && dplyr::n_distinct(metadata[[PHENO_COL]]
     mutate(.outcome = relevel(factor(.data[[PHENO_COL]]), ref = pos))
 }
 
-# --------- Collect CLR matrices ---------
+# --------- Collect CLR files ---------
 clr_paths <- list.files(output_folder, pattern = "^normalized_.*_clr\\.csv$", full.names = TRUE)
-raw_fp <- file.path(output_folder, "raw.csv")
-if (file.exists(raw_fp)) clr_paths <- c(raw_fp, clr_paths)
-if (!length(clr_paths)) stop("No CLR matrices found (expected 'normalized_*_clr.csv').")
 
-method_names <- ifelse(basename(clr_paths) == "raw.csv",
+# include raw_clr.csv (as baseline) if present
+raw_clr_fp <- file.path(output_folder, "raw_clr.csv")
+if (file.exists(raw_clr_fp)) clr_paths <- c(raw_clr_fp, clr_paths)
+
+if (!length(clr_paths)) stop("No CLR matrices found (expected 'raw_clr.csv' or 'normalized_*_clr.csv').")
+
+method_names <- ifelse(basename(clr_paths) == "raw_clr.csv",
                        "Before correction",
                        gsub("^normalized_|_clr\\.csv$", "", basename(clr_paths)))
 file_list <- setNames(clr_paths, method_names)
+method_levels <- names(file_list)  # preserve original order for legend
 
 # --------- Helpers ---------
 safe_numeric_matrix <- function(df) {
@@ -84,7 +89,6 @@ fit_rf_cv <- function(df_features, y_factor, folds = 5, reps = 5) {
     tuneLength = 5,
     importance = TRUE
   )
-
 }
 
 # --------- Train per method, compute AUROC & ROC coords ---------
@@ -95,7 +99,7 @@ for (nm in names(file_list)) {
   fp <- file_list[[nm]]
   dat <- read_csv(fp, show_col_types = FALSE)
   
-  # make sure we can merge to metadata
+  # ensure merge key
   if (!"sample_id" %in% names(dat)) {
     if (nrow(dat) == nrow(metadata)) {
       dat$sample_id <- metadata$sample_id
@@ -133,8 +137,8 @@ for (nm in names(file_list)) {
   bt <- fit$bestTune
   pred <- fit$pred
   for (col in names(bt)) pred <- pred[pred[[col]] == bt[[col]], , drop = FALSE]
+  # probability column for positive class is named by its level ("pos")
   if (!all(c("obs","pos") %in% names(pred))) {
-    # probability column for positive class is named by its level ("pos")
     pos_level <- levels(y)[1]  # should be "pos"
     if (!pos_level %in% names(pred)) {
       warning(sprintf("Skipping %s: could not find positive class prob column.", nm))
@@ -143,7 +147,6 @@ for (nm in names(file_list)) {
     names(pred)[names(pred) == pos_level] <- "pos"
   }
   
-  # AUROC
   roc_obj <- pROC::roc(response = pred$obs,
                        predictor = pred$pos,
                        levels = c("neg","pos"),
@@ -151,7 +154,6 @@ for (nm in names(file_list)) {
                        quiet = TRUE)
   auc_val <- as.numeric(pROC::auc(roc_obj))
   
-  # ROC coords
   rcoords <- data.frame(
     FPR = 1 - roc_obj$specificities,
     TPR = roc_obj$sensitivities,
@@ -162,42 +164,80 @@ for (nm in names(file_list)) {
 }
 
 roc_df <- dplyr::bind_rows(roc_rows)
-auc_tbl <- dplyr::bind_rows(auc_rows) %>% arrange(desc(AUC)) %>% mutate(Rank = row_number())
+auc_tbl <- dplyr::bind_rows(auc_rows)
 
-# Build "Method (AUC=...)" labels in AUC order
-label_map <- setNames(
-  sprintf("%s (AUC=%.3f)", auc_tbl$Method, auc_tbl$AUC),
-  auc_tbl$Method
-)
+# if nothing computed:
+if (!nrow(auc_tbl)) stop("No AUROC results could be computed.")
 
-# New legend factor with those labels (keeps AUC ranking order)
-roc_df$Legend <- factor(label_map[as.character(roc_df$Method)],
-                        levels = label_map)
-
-# order legend by AUC (best first)
-roc_df$Method <- factor(roc_df$Method, levels = auc_tbl$Method)
-
-# Plot using the new legend labels
-p_roc <- ggplot(roc_df, aes(x = FPR, y = TPR, color = Legend)) +
-  geom_path(linewidth = 1) +
-  geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
-  coord_equal(xlim = c(0,1), ylim = c(0,1)) +
-  labs(title = "ROC curves (5 Folds X 5 Repeats)",
-       x = "False Positive Rate (1 - Specificity)",
-       y = "True Positive Rate (Sensitivity)",
-       color = NULL) +
-  theme_minimal(base_size = 14)
-
-# Save AUC table
-readr::write_csv(auc_tbl, file.path(output_folder, "auroc_ranking.csv"))
-print(auc_tbl)
-
-# --------- Plot: ROC curves (one panel) ---------
-
-
-ggsave(file.path(output_folder, "auroc.png"), p_roc, width = 8.5, height = 6, dpi = 300)
-ggsave(file.path(output_folder, "auroc.tif"), p_roc, width = 8.5, height = 6, dpi = 300, compression = "lzw")
-
-# Also save a legend with AUC values (optional quick text table)
-auc_annot <- auc_tbl %>% mutate(Label = sprintf("%s (AUC=%.3f)", Method, AUC)) %>% pull(Label)
-cat("AUC ranking:\n", paste(sprintf("%2d. %s", seq_along(auc_annot), auc_annot), collapse = "\n"), "\n")
+# --------- Baseline-only path (no ranking) ---------
+only_baseline <- (length(method_levels) == 1L && identical(method_levels, "Before correction"))
+if (only_baseline) {
+  base_auc <- auc_tbl %>% filter(Method == "Before correction")
+  if (!nrow(base_auc)) stop("No AUROC computed for 'Before correction'.")
+  base_auc <- base_auc %>%
+    mutate(Needs_Correction = AUC < AUC_THRESHOLD)
+  readr::write_csv(base_auc, file.path(output_folder, "auroc_raw_assessment.csv"))
+  print(base_auc)
+  
+  # Plot single ROC, keep original labeling/order
+  label_map <- setNames(sprintf("%s (AUC=%.3f)", base_auc$Method, base_auc$AUC),
+                        base_auc$Method)
+  roc_df <- roc_df %>% filter(Method == "Before correction")
+  roc_df$Legend <- factor(label_map[as.character(roc_df$Method)], levels = unname(label_map))
+  
+  p_roc <- ggplot(roc_df, aes(x = FPR, y = TPR, color = Legend)) +
+    geom_path(linewidth = 1) +
+    geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
+    coord_equal(xlim = c(0,1), ylim = c(0,1)) +
+    labs(title = "ROC curve (baseline)",
+         x = "False Positive Rate (1 - Specificity)",
+         y = "True Positive Rate (Sensitivity)",
+         color = NULL) +
+    theme_minimal(base_size = 14) +
+    theme(legend.position = "bottom")
+  
+  ggsave(file.path(output_folder, "auroc.png"), p_roc, width = 6.5, height = 5, dpi = 300)
+  ggsave(file.path(output_folder, "auroc.tif"), p_roc, width = 6.5, height = 5, dpi = 300, compression = "lzw")
+  
+  if (isTRUE(base_auc$Needs_Correction[1])) {
+    message(sprintf("Baseline AUC = %.3f < %.2f — correction recommended.", base_auc$AUC[1], AUC_THRESHOLD))
+  } else {
+    message(sprintf("Baseline AUC = %.3f ≥ %.2f — correction may not be necessary.", base_auc$AUC[1], AUC_THRESHOLD))
+  }
+  
+} else {
+  # --------- Multi-method: keep legend order as file_list (no re-ranking in plot) ---------
+  # Save AUC ranking CSV, but DO NOT reorder legend/lines in the plot
+  auc_ranked <- auc_tbl %>% arrange(desc(AUC)) %>% mutate(Rank = row_number())
+  readr::write_csv(auc_ranked, file.path(output_folder, "auroc_ranking.csv"))
+  print(auc_ranked)
+  
+  # Keep only methods that actually produced ROC coords, in original discovery order
+  methods_plotted <- intersect(method_levels, unique(roc_df$Method))
+  
+  # label text includes AUC values but order follows methods_plotted
+  auc_vec <- setNames(auc_tbl$AUC, auc_tbl$Method)
+  labels_in_order <- sapply(methods_plotted, function(m) sprintf("%s (AUC=%.3f)", m, auc_vec[[m]]))
+  label_map <- setNames(labels_in_order, methods_plotted)
+  
+  roc_df <- roc_df %>% filter(Method %in% methods_plotted)
+  roc_df$Legend <- factor(label_map[as.character(roc_df$Method)], levels = unname(label_map))
+  
+  p_roc <- ggplot(roc_df, aes(x = FPR, y = TPR, color = Legend)) +
+    geom_path(linewidth = 1) +
+    geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
+    coord_equal(xlim = c(0,1), ylim = c(0,1)) +
+    labs(title = "ROC curves (5 Folds × 5 Repeats)",
+         x = "False Positive Rate (1 - Specificity)",
+         y = "True Positive Rate (Sensitivity)",
+         color = NULL) +
+    theme_minimal(base_size = 14) +
+    theme(legend.position = "bottom")
+  
+  ggsave(file.path(output_folder, "auroc.png"), p_roc, width = 8.8, height = 6.2, dpi = 300)
+  ggsave(file.path(output_folder, "auroc.tif"), p_roc, width = 8.8, height = 6.2, dpi = 300, compression = "lzw")
+  
+  # quick console summary
+  auc_annot <- auc_ranked %>% mutate(Label = sprintf("%s (AUC=%.3f)", Method, AUC)) %>% pull(Label)
+  cat("AUC ranking:\n", paste(sprintf("%2d. %s", seq_along(auc_annot), auc_annot), collapse = "\n"), "\n")
+}

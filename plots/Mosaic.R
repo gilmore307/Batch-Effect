@@ -181,24 +181,3 @@ mbecMosaicPlot <- function(study.summary, model.vars) {
 plot.mosaic <- mbecMosaicPlot(study.summary = mosaic_data, model.vars = c('batchid', '.outcome'))
 ggsave(file.path(output_folder, "mosaic_plot.png"), plot = plot.mosaic, width = 12, height = 8, dpi = 300)
 ggsave(file.path(output_folder, "mosaic_plot.tif"), plot = plot.mosaic, width = 12, height = 8, dpi = 300, compression = "lzw")
-
-# ==== Statistical Test to detect imbalance ====
-# Conduct a Chi-Square test to assess if phenotype distribution differs across batches
-contingency_table <- mosaic_data %>%
-  select(batchid, .outcome, count) %>%
-  tidyr::pivot_wider(names_from = .outcome, values_from = count, values_fill = 0) %>%
-  as.data.frame()
-
-rownames(contingency_table) <- contingency_table$batchid
-contingency_table$batchid <- NULL
-
-# Perform Chi-Square Test
-chi_test_result <- chisq.test(as.matrix(contingency_table))
-
-# Report
-message(sprintf("Chi-square p-value: %.4g", chi_test_result$p.value))
-if (chi_test_result$p.value < 0.05) {
-  message("Batch effects are significant. Consider applying batch correction.")
-} else {
-  message("Batch effects are not significant. No batch correction needed.")
-}

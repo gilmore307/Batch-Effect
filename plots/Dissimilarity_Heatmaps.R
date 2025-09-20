@@ -1,4 +1,6 @@
-# ==== Dissimilarity Heatmaps: Aitchison RMSE (CLR) & Bray–Curtis (TSS) ====
+# =========================
+# Dissimilarity Heatmaps: Aitchison RMSE (CLR) & Bray–Curtis (TSS)
+# =========================
 suppressPackageStartupMessages({
   library(ggplot2)
   library(readr)
@@ -35,14 +37,14 @@ name_from <- function(paths, suffix) gsub(paste0("^normalized_|_", suffix, "\\.c
 file_list_clr <- setNames(clr_paths, if (length(clr_paths)) name_from(clr_paths, "clr") else character())
 file_list_tss <- setNames(tss_paths, if (length(tss_paths)) name_from(tss_paths, "tss") else character())
 
-# Include raw.csv as "Before correction" in both lists if present
-raw_fp <- file.path(output_folder, "raw.csv")
-if (file.exists(raw_fp)) {
-  file_list_clr <- c("Before correction" = raw_fp, file_list_clr)
-  file_list_tss <- c("Before correction" = raw_fp, file_list_tss)
-}
+# Include raw_clr.csv / raw_tss.csv as "Before correction" if present
+raw_clr_fp <- file.path(output_folder, "raw_clr.csv")
+raw_tss_fp <- file.path(output_folder, "raw_tss.csv")
+if (file.exists(raw_clr_fp)) file_list_clr <- c("Before correction" = raw_clr_fp, file_list_clr)
+if (file.exists(raw_tss_fp)) file_list_tss <- c("Before correction" = raw_tss_fp, file_list_tss)
+
 if (!length(file_list_clr) && !length(file_list_tss)) {
-  stop("No normalized files found (expected normalized_*_clr.csv and/or normalized_*_tss.csv) in ", output_folder)
+  stop("No normalized files found (expected raw_clr.csv/raw_tss.csv and/or normalized_*_clr.csv / normalized_*_tss.csv) in ", output_folder)
 }
 
 batch_var <- "batchid"
@@ -54,7 +56,6 @@ sort_levels_numeric <- function(x) {
   if (all(!is.na(xn))) as.character(sort(xn)) else sort(x, method = "radix")
 }
 
-# TSS closure (rows sum to 1); robust to zeros/NA/negatives
 safe_closure <- function(X) {
   X[!is.finite(X)] <- 0
   X[X < 0] <- 0
@@ -67,15 +68,12 @@ safe_closure <- function(X) {
   sweep(X, 1, rs, "/")
 }
 
-# CLR transform with multiplicative replacement for zeros
 clr_transform <- function(X) {
   Xc <- safe_closure(X)
   for (i in seq_len(nrow(Xc))) {
     xi <- Xc[i, ]
     pos <- xi > 0 & is.finite(xi)
-    if (!any(pos)) {
-      xi[] <- 1 / length(xi); pos <- xi > 0
-    }
+    if (!any(pos)) { xi[] <- 1 / length(xi); pos <- xi > 0 }
     if (any(!pos)) {
       minpos <- min(xi[pos], na.rm = TRUE)
       repl <- min(minpos * 0.5, 1e-8)
@@ -88,7 +86,6 @@ clr_transform <- function(X) {
   sweep(L, 1, rowMeans(L), "-")
 }
 
-# If negatives present, treat as already CLR and row-center; else do CLR from TSS
 to_clr_for_rmse <- function(X) {
   if (any(X < 0, na.rm = TRUE)) {
     sweep(X, 1, rowMeans(X, na.rm = TRUE), "-")
@@ -97,10 +94,8 @@ to_clr_for_rmse <- function(X) {
   }
 }
 
-# Euclidean distances -> RMSE by dividing by sqrt(p)
 euclidean_to_rmse <- function(D_eucl, p) as.matrix(D_eucl) / sqrt(p)
 
-# Average pairwise sample distances into batch×batch matrix
 batch_distance_matrix <- function(D_sample, batch_factor, diag_mode = c("zero","mean","NA")) {
   diag_mode <- match.arg(diag_mode)
   M <- as.matrix(D_sample)
@@ -130,7 +125,6 @@ batch_distance_matrix <- function(D_sample, batch_factor, diag_mode = c("zero","
   Db
 }
 
-# ---- Build Aitchison RMSE batch×batch matrix (CLR + Euclidean) ----
 rmse_batch_matrix_aitchison <- function(df, metadata, batch_var = "batchid", diag_mode = "zero") {
   if (!"sample_id" %in% names(df)) {
     if (nrow(df) == nrow(metadata)) df$sample_id <- metadata$sample_id
@@ -138,24 +132,20 @@ rmse_batch_matrix_aitchison <- function(df, metadata, batch_var = "batchid", dia
   }
   df  <- df %>% mutate(sample_id = as.character(sample_id))
   dfm <- inner_join(df, metadata, by = "sample_id")
-  
   feat_cols <- setdiff(names(df), "sample_id")
   X <- dfm %>% select(all_of(feat_cols)) %>% select(where(is.numeric)) %>% as.matrix()
   keep <- apply(X, 2, function(col) all(is.finite(col)) && sd(col, na.rm = TRUE) > 0)
   X <- X[, keep, drop = FALSE]
   if (!ncol(X)) stop("No variable numeric features remain.")
-  
   Xclr <- to_clr_for_rmse(X)
   D_eucl <- dist(Xclr, method = "euclidean")
   D_rmse <- euclidean_to_rmse(D_eucl, p = ncol(Xclr))
-  
   b_levels <- sort_levels_numeric(unique(dfm[[batch_var]]))
   bfac <- factor(as.character(dfm[[batch_var]]), levels = b_levels)
   Db <- batch_distance_matrix(D_rmse, bfac, diag_mode = diag_mode)
   list(Db = Db, order = b_levels)
 }
 
-# ---- Build Bray–Curtis batch×batch matrix (TSS + vegdist 'bray') ----
 dissim_batch_matrix_bray <- function(df, metadata, batch_var = "batchid", diag_mode = "zero") {
   if (!"sample_id" %in% names(df)) {
     if (nrow(df) == nrow(metadata)) df$sample_id <- metadata$sample_id
@@ -163,26 +153,22 @@ dissim_batch_matrix_bray <- function(df, metadata, batch_var = "batchid", diag_m
   }
   df  <- df %>% mutate(sample_id = as.character(sample_id))
   dfm <- inner_join(df, metadata, by = "sample_id")
-  
   feat_cols <- setdiff(names(df), "sample_id")
   X <- dfm %>% select(all_of(feat_cols)) %>% select(where(is.numeric)) %>% as.matrix()
-  X <- safe_closure(X)  # proportions
+  X <- safe_closure(X)
   D_bray <- vegan::vegdist(X, method = "bray")
-  
   b_levels <- sort_levels_numeric(unique(dfm[[batch_var]]))
   bfac <- factor(as.character(dfm[[batch_var]]), levels = b_levels)
   Db <- batch_distance_matrix(D_bray, bfac, diag_mode = diag_mode)
   list(Db = Db, order = b_levels)
 }
 
-# ---- Generic heatmap panel (upper triangle, shared global scale) ----
 upper_heatmap_panel <- function(Db, ord, title_label, fill_label,
                                 global_min, global_max,
                                 label_digits = 3,
                                 text_threshold_frac = 0.6) {
   stopifnot(length(ord) == nrow(Db), length(ord) == ncol(Db))
   idx_map <- setNames(seq_along(ord), ord)
-  
   long <- as.data.frame(Db) |>
     mutate(batch1 = rownames(Db)) |>
     pivot_longer(-batch1, names_to = "batch2", values_to = "val") |>
@@ -198,7 +184,6 @@ upper_heatmap_panel <- function(Db, ord, title_label, fill_label,
       txt_col = ifelse(!is.na(val) & val >= (global_min + text_threshold_frac * (global_max - global_min)),
                        "white", "black")
     )
-  
   ggplot(long, aes(x = batch2, y = batch1, fill = val)) +
     geom_tile(width = 0.92, height = 0.92) +
     geom_text(aes(label = label, colour = txt_col), size = 3) +
@@ -206,7 +191,7 @@ upper_heatmap_panel <- function(Db, ord, title_label, fill_label,
     scale_fill_viridis_c(
       name = fill_label,
       option = "D",
-      direction = -1,         # darker = larger dissimilarity
+      direction = -1,
       limits = c(global_min, global_max),
       oob = scales::squish
     ) +
@@ -226,10 +211,19 @@ upper_heatmap_panel <- function(Db, ord, title_label, fill_label,
     guides(fill = guide_colourbar(title.position = "top"))
 }
 
+upper_mean <- function(M) {
+  M <- as.matrix(M)
+  ut <- upper.tri(M, diag = FALSE)
+  vals <- M[ut]
+  if (!length(vals)) return(NA_real_)
+  mean(vals, na.rm = TRUE)
+}
+
 # ==== A) Aitchison RMSE heatmaps ====
 diag_mode <- "zero"
 label_digits <- 2
 text_threshold_frac <- 0.6
+ncol_grid <- 2
 
 mat_list_ait <- list()
 ord_list_ait <- list()
@@ -258,26 +252,23 @@ for (nm in names(mat_list_ait)) {
   )
 }
 
-ncol_grid <- 2
-combined_ait <- wrap_plots(plots_ait, ncol = ncol_grid) +
-  plot_layout(guides = "collect") &
-  theme(legend.position = "bottom", legend.direction = "horizontal")
-
-ggsave(file.path(output_folder, "dissimilarity_heatmaps_aitchison.png"),
-       plot = combined_ait, width = 8.5 * ncol_grid, height = 6 * ceiling(length(plots_ait) / ncol_grid),
-       dpi = 300)
-ggsave(file.path(output_folder, "dissimilarity_heatmaps_aitchison.tif"),
-       plot = combined_ait, width = 8.5 * ncol_grid, height = 6 * ceiling(length(plots_ait) / ncol_grid),
-       dpi = 300, compression = "lzw")
-
-# Helper: mean of upper-triangle (off-diagonal) entries
-upper_mean <- function(M) {
-  M <- as.matrix(M)
-  ut <- upper.tri(M, diag = FALSE)
-  vals <- M[ut]
-  if (!length(vals)) return(NA_real_)
-  mean(vals, na.rm = TRUE)
+# ---- Combine & save (Aitchison) ----
+n_panels_ait <- length(plots_ait)
+if (n_panels_ait == 1L) {
+  combined_ait <- plots_ait[[1]] +
+    theme(legend.position = "bottom", legend.direction = "horizontal")
+  w_ait <- 8.5; h_ait <- 6
+} else {
+  combined_ait <- wrap_plots(plots_ait, ncol = ncol_grid) +
+    plot_layout(guides = "collect") &
+    theme(legend.position = "bottom", legend.direction = "horizontal")
+  w_ait <- 8.5 * min(ncol_grid, n_panels_ait)
+  h_ait <- 6   * ceiling(n_panels_ait / ncol_grid)
 }
+ggsave(file.path(output_folder, "dissimilarity_heatmaps_aitchison.png"),
+       plot = combined_ait, width = w_ait, height = h_ait, dpi = 300)
+ggsave(file.path(output_folder, "dissimilarity_heatmaps_aitchison.tif"),
+       plot = combined_ait, width = w_ait, height = h_ait, dpi = 300, compression = "lzw")
 
 # ==== B) Bray–Curtis heatmaps ====
 mat_list_bc <- list()
@@ -298,8 +289,8 @@ for (nm in names(mat_list_bc)) {
   plots_bc[[nm]] <- upper_heatmap_panel(
     Db = mat_list_bc[[nm]],
     ord = ord_list_bc[[nm]],
-    title_label = paste0("Dissimilarity Heatmap — Bray–Curtis (TSS) — ", nm),
-    fill_label = "Bray–Curtis dissimilarity",
+    title_label = paste0("Dissimilarity Heatmap — RMSR (Bray–Curtis/TSS) — ", nm),
+    fill_label = "RMSR (Bray–Curtis/TSS)",
     global_min = gmin_bc,
     global_max = gmax_bc,
     label_digits = label_digits,
@@ -307,61 +298,141 @@ for (nm in names(mat_list_bc)) {
   )
 }
 
-combined_bc <- wrap_plots(plots_bc, ncol = ncol_grid) +
-  plot_layout(guides = "collect") &
-  theme(legend.position = "bottom", legend.direction = "horizontal")
-
+# ---- Combine & save (Bray–Curtis) ----
+n_panels_bc <- length(plots_bc)
+if (n_panels_bc == 1L) {
+  combined_bc <- plots_bc[[1]] +
+    theme(legend.position = "bottom", legend.direction = "horizontal")
+  w_bc <- 8.5; h_bc <- 6
+} else {
+  combined_bc <- wrap_plots(plots_bc, ncol = ncol_grid) +
+    plot_layout(guides = "collect") &
+    theme(legend.position = "bottom", legend.direction = "horizontal")
+  w_bc <- 8.5 * min(ncol_grid, n_panels_bc)
+  h_bc <- 6   * ceiling(n_panels_bc / ncol_grid)
+}
 ggsave(file.path(output_folder, "dissimilarity_heatmaps_braycurtis.png"),
-       plot = combined_bc, width = 8.5 * ncol_grid, height = 6 * ceiling(length(plots_bc) / ncol_grid),
-       dpi = 300)
+       plot = combined_bc, width = w_bc, height = h_bc, dpi = 300)
 ggsave(file.path(output_folder, "dissimilarity_heatmaps_braycurtis.tif"),
-       plot = combined_bc, width = 8.5 * ncol_grid, height = 6 * ceiling(length(plots_bc) / ncol_grid),
-       dpi = 300, compression = "lzw")
+       plot = combined_bc, width = w_bc, height = h_bc, dpi = 300, compression = "lzw")
 
-# ==== Unified ranking (Aitchison RMSE + Bray–Curtis) ====
+# ==== Unified ranking (Aitchison RMSE + Bray–Curtis) OR baseline-only assessment ====
 mean_ait <- if (length(mat_list_ait)) sapply(mat_list_ait, upper_mean) else numeric()
 mean_bc  <- if (length(mat_list_bc))  sapply(mat_list_bc,  upper_mean) else numeric()
 
 all_methods <- sort(unique(c(names(mean_ait), names(mean_bc))))
+only_baseline <- (length(all_methods) == 1L) && identical(all_methods, "Before correction")
 
-# weights for combining (geometric mean)
-weights <- c(aitchison = 0.5, bray = 0.5)
-wa <- weights["aitchison"]; wb <- weights["bray"]
-if (is.na(wa)) wa <- 0.5
-if (is.na(wb)) wb <- 0.5
-wsum <- wa + wb; wa <- wa / wsum; wb <- wb / wsum
-
-unified_rows <- lapply(all_methods, function(m) {
-  m_ait <- if (m %in% names(mean_ait)) mean_ait[[m]] else NA_real_
-  m_bc  <- if (m %in% names(mean_bc))  mean_bc[[m]]  else NA_real_
-  # Convert “lower is better” into scores (higher is better)
-  S_ait <- if (is.na(m_ait)) NA_real_ else 1 / (1 + m_ait)
-  S_bc  <- if (is.na(m_bc))  NA_real_ else 1 / (1 + m_bc)
-  # Weighted geometric mean
-  S_comb <- if (!is.na(S_ait) && !is.na(S_bc)) {
-    (S_ait ^ wa) * (S_bc ^ wb)
-  } else if (!is.na(S_ait)) {
-    S_ait
-  } else if (!is.na(S_bc)) {
-    S_bc
-  } else {
-    NA_real_
+if (only_baseline) {
+  assess_rows <- list()
+  
+  # Aitchison baseline assessment
+  if ("Before correction" %in% names(file_list_clr)) {
+    df_raw_clr <- read_csv(file_list_clr[["Before correction"]], show_col_types = FALSE)
+    comp_zero  <- rmse_batch_matrix_aitchison(df_raw_clr, metadata, batch_var = batch_var, diag_mode = "zero")
+    comp_mean  <- rmse_batch_matrix_aitchison(df_raw_clr, metadata, batch_var = batch_var, diag_mode = "mean")
+    between    <- upper_mean(comp_zero$Db)
+    within     <- mean(diag(comp_mean$Db), na.rm = TRUE)
+    score      <- 1 / (1 + between)
+    needs_corr <- is.finite(between) && is.finite(within) && (between > within)
+    assess_rows[["CLR"]] <- tibble::tibble(
+      Method            = "Before correction",
+      Geometry          = "Aitchison (CLR)",
+      Mean_Between      = between,
+      Mean_Within       = within,
+      Score             = score,
+      Needs_Correction  = needs_corr
+    )
   }
-  data.frame(
-    Method                   = m,
-    MeanUpper_Aitchison_RMSE = m_ait,
-    MeanUpper_Bray           = m_bc,
-    Score_Aitchison          = S_ait,
-    Score_Bray               = S_bc,
-    Combined_Score           = S_comb,
-    stringsAsFactors = FALSE
+  
+  # Bray–Curtis baseline assessment
+  if ("Before correction" %in% names(file_list_tss)) {
+    df_raw_tss <- read_csv(file_list_tss[["Before correction"]], show_col_types = FALSE)
+    comp_zero  <- dissim_batch_matrix_bray(df_raw_tss, metadata, batch_var = batch_var, diag_mode = "zero")
+    comp_mean  <- dissim_batch_matrix_bray(df_raw_tss, metadata, batch_var = batch_var, diag_mode = "mean")
+    between    <- upper_mean(comp_zero$Db)
+    within     <- mean(diag(comp_mean$Db), na.rm = TRUE)
+    score      <- 1 / (1 + between)
+    needs_corr <- is.finite(between) && is.finite(within) && (between > within)
+    assess_rows[["TSS"]] <- tibble::tibble(
+      Method            = "Before correction",
+      Geometry          = "Bray–Curtis (TSS)",
+      Mean_Between      = between,
+      Mean_Within       = within,
+      Score             = score,
+      Needs_Correction  = needs_corr
+    )
+  }
+  
+  assess_df <- dplyr::bind_rows(assess_rows)
+  
+  # Combined summary (geometric mean of available scores; OR on correction flags)
+  comb_score <- dplyr::case_when(
+    nrow(assess_df) >= 2 && all(is.finite(assess_df$Score)) ~ sqrt(prod(assess_df$Score)),
+    TRUE                                                    ~ max(assess_df$Score, na.rm = TRUE)
   )
-})
-
-ranking_unified <- dplyr::bind_rows(unified_rows) %>%
-  dplyr::filter(!is.na(Combined_Score)) %>%
-  dplyr::arrange(dplyr::desc(Combined_Score)) %>%
-  dplyr::mutate(Rank = dplyr::row_number())
-
-print(as.data.frame(ranking_unified), row.names = FALSE)
-readr::write_csv(ranking_unified, file.path(output_folder, "dissimilarity_ranking.csv"))
+  needs_corr_any <- any(assess_df$Needs_Correction, na.rm = TRUE)
+  
+  assess_df <- dplyr::bind_rows(
+    assess_df,
+    tibble::tibble(
+      Method           = "Before correction",
+      Geometry         = "Combined",
+      Mean_Between     = NA_real_,
+      Mean_Within      = NA_real_,
+      Score            = comb_score,
+      Needs_Correction = needs_corr_any
+    )
+  )
+  
+  print(assess_df, n = nrow(assess_df))
+  readr::write_csv(assess_df, file.path(output_folder, "dissimilarity_raw_assessment.csv"))
+  
+  message(if (isTRUE(needs_corr_any)) {
+    "Assessment: Between-batch dissimilarity exceeds within-batch spread in at least one geometry — correction recommended."
+  } else {
+    "Assessment: Between-batch dissimilarity does not exceed within-batch spread — correction may not be necessary."
+  })
+  
+} else {
+  # ---- Ranking (multiple methods) ----
+  # Convert “lower is better” (mean between-batch dissimilarity) into scores; combine via weighted geometric mean.
+  weights <- c(aitchison = 0.5, bray = 0.5)
+  wa <- weights["aitchison"]; wb <- weights["bray"]
+  if (is.na(wa)) wa <- 0.5
+  if (is.na(wb)) wb <- 0.5
+  wsum <- wa + wb; wa <- wa / wsum; wb <- wb / wsum
+  
+  unified_rows <- lapply(all_methods, function(m) {
+    m_ait <- if (m %in% names(mean_ait)) mean_ait[[m]] else NA_real_
+    m_bc  <- if (m %in% names(mean_bc))  mean_bc[[m]]  else NA_real_
+    S_ait <- if (is.na(m_ait)) NA_real_ else 1 / (1 + m_ait)
+    S_bc  <- if (is.na(m_bc))  NA_real_ else 1 / (1 + m_bc)
+    S_comb <- if (!is.na(S_ait) && !is.na(S_bc)) {
+      (S_ait ^ wa) * (S_bc ^ wb)
+    } else if (!is.na(S_ait)) {
+      S_ait
+    } else if (!is.na(S_bc)) {
+      S_bc
+    } else {
+      NA_real_
+    }
+    data.frame(
+      Method                   = m,
+      MeanUpper_Aitchison_RMSE = m_ait,
+      MeanUpper_Bray           = m_bc,
+      Score_Aitchison          = S_ait,
+      Score_Bray               = S_bc,
+      Combined_Score           = S_comb,
+      stringsAsFactors = FALSE
+    )
+  })
+  
+  ranking_unified <- dplyr::bind_rows(unified_rows) %>%
+    dplyr::filter(!is.na(Combined_Score)) %>%
+    dplyr::arrange(dplyr::desc(Combined_Score)) %>%
+    dplyr::mutate(Rank = dplyr::row_number())
+  
+  print(as.data.frame(ranking_unified), row.names = FALSE)
+  readr::write_csv(ranking_unified, file.path(output_folder, "dissimilarity_ranking.csv"))
+}

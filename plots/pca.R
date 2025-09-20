@@ -61,26 +61,19 @@ if (!dir.exists(output_folder)) dir.create(output_folder, recursive = TRUE)
 metadata <- read_csv(file.path(output_folder, "metadata.csv"), show_col_types = FALSE) |>
   mutate(sample_id = as.character(sample_id))
 
-# ==== Find All CLR Normalized Files ====
-file_paths <- list.files(
-  output_folder,
-  pattern = "^normalized_.*_clr\\.csv$",
-  full.names = TRUE
-)
+# --------- Collect CLR files ---------
+clr_paths <- list.files(output_folder, pattern = "^normalized_.*_clr\\.csv$", full.names = TRUE)
 
-# Clean names (remove prefix + suffix)
-file_names <- gsub("^normalized_|_clr\\.csv$", "", basename(file_paths))
-file_list  <- setNames(file_paths, file_names)
+# include raw_clr.csv (as baseline) if present
+raw_clr_fp <- file.path(output_folder, "raw_clr.csv")
+if (file.exists(raw_clr_fp)) clr_paths <- c(raw_clr_fp, clr_paths)
 
-# Prepend raw.csv as "Before Correction" if present
-raw_fp <- file.path(output_folder, "raw.csv")
-if (file.exists(raw_fp)) {
-  file_list <- c("Before Correction" = raw_fp, file_list)
-}
+if (!length(clr_paths)) stop("No CLR matrices found (expected 'raw_clr.csv' or 'normalized_*_clr.csv').")
 
-if (length(file_list) == 0) {
-  stop("No CLR files found. Expected files matching 'normalized_*_clr.csv' in ", output_folder)
-}
+method_names <- ifelse(basename(clr_paths) == "raw_clr.csv",
+                       "Before correction",
+                       gsub("^normalized_|_clr\\.csv$", "", basename(clr_paths)))
+file_list <- setNames(clr_paths, method_names)
 
 # ==== build plot.df + metric.df like mbecPCA would ====
 # ensures consistent factor levels across panels so legend can be shared
@@ -299,25 +292,40 @@ for (nm in names(file_list)) {
 
 # ---- Combine ALL panels and keep ONLY ONE legend at the bottom (horizontal) ----
 ncol_grid <- 2
-combined <- wrap_plots(plots, ncol = ncol_grid) +
-  plot_layout(guides = "collect") &
-  theme(
-    legend.position  = "bottom",
-    legend.direction = "horizontal",
-    legend.box       = "vertical",
-    plot.margin = margin(8, 14, 8, 14)
-  )
+n_panels  <- length(plots)
+if (n_panels == 0L) stop("No PCA panels to plot.")
+
+if (n_panels == 1L) {
+  combined <- plots[[1]] +
+    theme(
+      legend.position  = "bottom",
+      legend.direction = "horizontal",
+      legend.box       = "vertical",
+      plot.margin      = margin(8, 14, 8, 14)
+    )
+  w <- 9.5; h <- 6
+} else {
+  combined <- wrap_plots(plots, ncol = ncol_grid) +
+    plot_layout(guides = "collect") &
+    theme(
+      legend.position  = "bottom",
+      legend.direction = "horizontal",
+      legend.box       = "vertical",
+      plot.margin      = margin(8, 14, 8, 14)
+    )
+  w <- 9.5 * min(ncol_grid, n_panels)
+  h <- 6   * ceiling(n_panels / ncol_grid)
+}
 
 ggsave(file.path(output_folder, "pca.png"),
-       plot = combined, width = 9.5 * ncol_grid, height = 6 * ceiling(length(plots) / ncol_grid),
-       dpi = 300)
+       plot = combined, width = w, height = h, dpi = 300)
 ggsave(file.path(output_folder, "pca.tif"),
-       plot = combined, width = 9.5 * ncol_grid, height = 6 * ceiling(length(plots) / ncol_grid),
-       dpi = 300, compression = "lzw")
+       plot = combined, width = w, height = h, dpi = 300, compression = "lzw")
 
 # =========================
-# PCA ranking (Aitchison/CLR-like PCA view)
+# PCA ranking / assessment
 # =========================
+
 compute_centroids_pca <- function(scores, batch_var = "batchid") {
   scores %>%
     dplyr::group_by(!!rlang::sym(batch_var)) %>%
@@ -327,43 +335,105 @@ compute_centroid_distances <- function(centroids) {
   if (nrow(centroids) < 2) return(NA_real_)
   as.numeric(mean(dist(centroids[, c("PC1","PC2")], method = "euclidean")))
 }
+# Weighted average within-batch dispersion on PC1–PC2 (higher = batches internally more spread)
+compute_within_dispersion <- function(scores, batch_var = "batchid") {
+  if (!all(c("PC1","PC2", batch_var) %in% names(scores))) return(NA_real_)
+  levs <- levels(scores[[batch_var]])
+  if (is.null(levs)) levs <- unique(scores[[batch_var]])
+  ws <- c(); ns <- c()
+  for (lev in levs) {
+    sub <- scores[scores[[batch_var]] == lev, c("PC1","PC2"), drop = FALSE]
+    n <- nrow(sub)
+    if (n < 2) next
+    d <- stats::dist(sub, method = "euclidean")
+    ws <- c(ws, mean(d))
+    ns <- c(ns, n)
+  }
+  if (!length(ws)) return(NA_real_)
+  stats::weighted.mean(ws, w = ns)
+}
 pca_metric_score <- function(batch_distance, coverage) {
   if (is.na(batch_distance) || is.na(coverage)) return(NA_real_)
-  coverage <- max(0, min(1, coverage))         # clamp to [0,1]
-  (1 / (1 + batch_distance)) * coverage        # higher = better
+  coverage <- max(0, min(1, coverage))
+  (1 / (1 + batch_distance)) * coverage  # higher = better
 }
 
-rank_tbl <- dplyr::tibble(Method = character(),
-                          Batch_Distance = numeric(),
-                          Coverage = numeric(),
-                          Score = numeric())
+only_baseline <- (length(frames_cache) == 1L) && identical(names(frames_cache), "Before correction")
 
-for (m in names(frames_cache)) {
+if (only_baseline) {
+  # ---- Assess RAW only (no ranking) ----
+  m <- "Before correction"
   fr <- frames_cache[[m]]
-  # Batch centroid distance on PC1–PC2
-  if (!all(c("PC1","PC2","sample_id") %in% names(fr$plot.df))) next
+  stopifnot(!is.null(fr))
+  
+  # Build scores with batch
   md <- metadata[match(fr$plot.df$sample_id, metadata$sample_id), , drop = FALSE]
   scores <- fr$plot.df %>%
     dplyr::select(sample_id, PC1, PC2) %>%
     dplyr::mutate(batchid = factor(md$batchid))
+  
   cents <- compute_centroids_pca(scores, "batchid")
-  D <- compute_centroid_distances(cents)
+  D_between <- compute_centroid_distances(cents)
+  W_within  <- compute_within_dispersion(scores, "batchid")
   
-  # Coverage from var.explained
   ve <- fr$metric.df$var.explained
-  cov2 <- sum(ve[1:min(2, length(ve))], na.rm = TRUE) / 100
+  coverage2 <- sum(ve[1:min(2, length(ve))], na.rm = TRUE) / 100
+  score <- pca_metric_score(D_between, coverage2)
   
-  rank_tbl <- dplyr::bind_rows(rank_tbl, dplyr::tibble(
-    Method = m,
-    Batch_Distance = D,
-    Coverage = cov2,
-    Score = pca_metric_score(D, cov2)
-  ))
+  # Simple, data-driven decision rule:
+  # If batches are separated more than their average within-batch spread -> likely batch effect.
+  needs_correction <- is.finite(D_between) && is.finite(W_within) && (D_between > W_within)
+  
+  assess_df <- tibble::tibble(
+    Method            = m,
+    Batch_Distance    = D_between,
+    Within_Dispersion = W_within,
+    Coverage_PC1_PC2  = coverage2,
+    Score             = score,
+    Needs_Correction  = needs_correction
+  )
+  
+  print(assess_df)
+  readr::write_csv(assess_df, file.path(output_folder, "pca_raw_assessment.csv"))
+  
+  msg <- if (isTRUE(needs_correction)) {
+    "Assessment: Batch separation exceeds within-batch spread — correction recommended."
+  } else {
+    "Assessment: Batch separation does not exceed within-batch spread — correction may not be necessary."
+  }
+  message(msg)
+  
+} else {
+  # ---- Rank multiple matrices (as before) ----
+  rank_tbl <- dplyr::tibble(Method = character(),
+                            Batch_Distance = numeric(),
+                            Coverage = numeric(),
+                            Score = numeric())
+  
+  for (m in names(frames_cache)) {
+    fr <- frames_cache[[m]]
+    if (!all(c("PC1","PC2","sample_id") %in% names(fr$plot.df))) next
+    md <- metadata[match(fr$plot.df$sample_id, metadata$sample_id), , drop = FALSE]
+    scores <- fr$plot.df %>%
+      dplyr::select(sample_id, PC1, PC2) %>%
+      dplyr::mutate(batchid = factor(md$batchid))
+    cents <- compute_centroids_pca(scores, "batchid")
+    D <- compute_centroid_distances(cents)
+    ve <- fr$metric.df$var.explained
+    cov2 <- sum(ve[1:min(2, length(ve))], na.rm = TRUE) / 100
+    
+    rank_tbl <- dplyr::bind_rows(rank_tbl, dplyr::tibble(
+      Method = m,
+      Batch_Distance = D,
+      Coverage = cov2,
+      Score = pca_metric_score(D, cov2)
+    ))
+  }
+  
+  ranked_pca <- rank_tbl %>%
+    dplyr::arrange(dplyr::desc(Score)) %>%
+    dplyr::mutate(Rank = dplyr::row_number())
+  
+  print(ranked_pca, n = nrow(ranked_pca))
+  readr::write_csv(ranked_pca, file.path(output_folder, "pca_ranking.csv"))
 }
-
-ranked_pca <- rank_tbl %>%
-  dplyr::arrange(dplyr::desc(Score)) %>%
-  dplyr::mutate(Rank = dplyr::row_number())
-
-print(ranked_pca, n = nrow(ranked_pca))
-readr::write_csv(ranked_pca, file.path(output_folder, "pca_ranking.csv"))

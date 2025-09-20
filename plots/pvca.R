@@ -206,26 +206,19 @@ if (!dir.exists(output_folder)) dir.create(output_folder, recursive = TRUE)
 metadata <- readr::read_csv(file.path(output_folder, "metadata.csv"), show_col_types = FALSE) %>%
   dplyr::mutate(sample_id = as.character(sample_id))
 
-# matrices: Raw + normalized_*
-file_paths <- list.files(
-  output_folder,
-  pattern = "^normalized_.*_clr\\.csv$",
-  full.names = TRUE
-)
+# --------- Collect CLR files ---------
+clr_paths <- list.files(output_folder, pattern = "^normalized_.*_clr\\.csv$", full.names = TRUE)
 
-# Clean names (remove prefix + suffix)
-file_names <- gsub("^normalized_|_clr\\.csv$", "", basename(file_paths))
-file_list  <- setNames(file_paths, file_names)
+# include raw_clr.csv (as baseline) if present
+raw_clr_fp <- file.path(output_folder, "raw_clr.csv")
+if (file.exists(raw_clr_fp)) clr_paths <- c(raw_clr_fp, clr_paths)
 
-# Prepend raw.csv as "Before Correction" if present
-raw_fp <- file.path(output_folder, "raw.csv")
-if (file.exists(raw_fp)) {
-  file_list <- c("Before Correction" = raw_fp, file_list)
-}
+if (!length(clr_paths)) stop("No CLR matrices found (expected 'raw_clr.csv' or 'normalized_*_clr.csv').")
 
-if (length(file_list) == 0) {
-  stop("No CLR files found. Expected files matching 'normalized_*_clr.csv' in ", output_folder)
-}
+method_names <- ifelse(basename(clr_paths) == "raw_clr.csv",
+                       "Before correction",
+                       gsub("^normalized_|_clr\\.csv$", "", basename(clr_paths)))
+file_list <- setNames(clr_paths, method_names)
 
 pvca_list <- lapply(names(file_list), function(nm) {
   message("Computing PVCA: ", nm)
@@ -266,9 +259,12 @@ cols <- c(
 
 p <- ggplot(pvca_plot_df, aes(x = Method, y = Fraction, fill = Component)) +
   geom_col(width = 0.72, color = "white", linewidth = 0.4) +
-  scale_fill_manual(values = cols,
-                    breaks = c("Residuals","Batch","Intersection","Treatment"),
-                    name = "Variation sources") +
+  scale_fill_manual(
+    values = cols,
+    breaks = component_order,   # c("Treatment","Intersection","Batch","Residuals")
+    limits = component_order,
+    name   = "Variation sources"
+  )+
   scale_y_continuous(
     labels = scales::percent_format(accuracy = 1),
     limits = c(0, 1.05),             # 105% headroom
@@ -344,18 +340,50 @@ ggsave(file.path(output_folder, "PVCA.png"),
 ggsave(file.path(output_folder, "PVCA.tif"),
        plot = combined, width = 7.2, height = 6.8, dpi = 300, compression = "lzw")
 
-# --------- Rank the methods based on Treatment (desc) then Batch (asc) ----------
+# --------- Rank the methods (or baseline-only assessment) ----------
 rank_pvca_methods <- function(df_long) {
   df_long %>%
     group_by(Method) %>%
     summarise(
       Treatment = sum(Fraction[Component == "Treatment"], na.rm = TRUE),
-      Batch     = sum(Fraction[Component == "Batch"],     na.rm = TRUE)
+      Batch     = sum(Fraction[Component == "Batch"],     na.rm = TRUE),
+      Intersection = sum(Fraction[Component == "Intersection"], na.rm = TRUE),
+      Residuals    = sum(Fraction[Component == "Residuals"],    na.rm = TRUE),
+      .groups = "drop"
     ) %>%
     arrange(desc(Treatment), Batch) %>%
     mutate(Rank = row_number())
 }
 
-ranked_pvca_methods <- rank_pvca_methods(pvca_plot_df)
-print(ranked_pvca_methods)
-readr::write_csv(ranked_pvca_methods, file.path(output_folder, "pvca_ranking.csv"))
+methods_present <- levels(pvca_plot_df$Method)
+only_baseline   <- length(methods_present) == 1L && identical(methods_present, "Before correction")
+
+if (only_baseline) {
+  # ---- Baseline-only: evaluate and tell if correction is needed; NO ranking ----
+  base_df <- pvca_plot_df %>%
+    group_by(Method) %>%
+    summarise(
+      Treatment   = sum(Fraction[Component == "Treatment"],   na.rm = TRUE),
+      Intersection= sum(Fraction[Component == "Intersection"],na.rm = TRUE),
+      Batch       = sum(Fraction[Component == "Batch"],       na.rm = TRUE),
+      Residuals   = sum(Fraction[Component == "Residuals"],   na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    mutate(
+      Score = Treatment / (Treatment + Batch + 1e-12),
+      Needs_Correction = (Batch >= Treatment) | (Batch > 0.05)
+    )
+  
+  print(base_df)
+  readr::write_csv(base_df, file.path(output_folder, "PVCA_raw_assessment.csv"))
+  
+  if (any(base_df$Needs_Correction, na.rm = TRUE)) {
+    message("PVCA baseline: Batch fraction ≥ Treatment (and/or Batch > 0.05) — correction recommended.")
+  } else {
+    message("PVCA baseline: Batch fraction modest relative to Treatment — correction may not be necessary.")
+  }
+} else {
+  ranked_pvca_methods <- rank_pvca_methods(pvca_plot_df)
+  print(ranked_pvca_methods)
+  readr::write_csv(ranked_pvca_methods, file.path(output_folder, "pvca_ranking.csv"))
+}

@@ -75,16 +75,30 @@ if (!dir.exists(output_folder)) dir.create(output_folder, recursive = TRUE)
 metadata <- read_csv(file.path(output_folder, "metadata.csv"), show_col_types = FALSE) |>
   mutate(sample_id = as.character(sample_id))
 
-# Find files
-clr_files <- list.files(output_folder, pattern = "^normalized_.*_clr\\.csv$", full.names = TRUE)
-tss_files <- list.files(output_folder, pattern = "^normalized_.*_tss\\.csv$", full.names = TRUE)
-raw_fp <- file.path(output_folder, "raw.csv")
-if (file.exists(raw_fp)) { clr_files <- c(raw_fp, clr_files); tss_files <- c(raw_fp, tss_files) }
-name_fun <- function(x, suffix) gsub(paste0("^normalized_|_", suffix, "\\.csv$"), "", basename(x))
-file_list_clr <- setNames(clr_files, ifelse(basename(clr_files) == "raw.csv", "Before correction", name_fun(clr_files, "clr")))
-file_list_tss <- setNames(tss_files, ifelse(basename(tss_files) == "raw.csv", "Before correction", name_fun(tss_files, "tss")))
-if (!length(file_list_clr)) stop("No CLR files found.")
-if (!length(file_list_tss)) stop("No TSS files found.")
+# ---- Find normalized files ----
+clr_paths <- list.files(output_folder, pattern = "^normalized_.*_clr\\.csv$", full.names = TRUE)
+tss_paths <- list.files(output_folder, pattern = "^normalized_.*_tss\\.csv$", full.names = TRUE)
+
+# Fallback: if no suffix-specific outputs, use any normalized_*.csv for both
+if (!length(clr_paths) && !length(tss_paths)) {
+  any_paths <- list.files(output_folder, pattern = "^normalized_.*\\.csv$", full.names = TRUE)
+  clr_paths <- any_paths
+  tss_paths <- any_paths
+}
+
+name_from <- function(paths, suffix) gsub(paste0("^normalized_|_", suffix, "\\.csv$"), "", basename(paths))
+file_list_clr <- setNames(clr_paths, if (length(clr_paths)) name_from(clr_paths, "clr") else character())
+file_list_tss <- setNames(tss_paths, if (length(tss_paths)) name_from(tss_paths, "tss") else character())
+
+# Include raw_clr.csv / raw_tss.csv as "Before correction" if present
+raw_clr_fp <- file.path(output_folder, "raw_clr.csv")
+raw_tss_fp <- file.path(output_folder, "raw_tss.csv")
+if (file.exists(raw_clr_fp)) file_list_clr <- c("Before correction" = raw_clr_fp, file_list_clr)
+if (file.exists(raw_tss_fp)) file_list_tss <- c("Before correction" = raw_tss_fp, file_list_tss)
+
+if (!length(file_list_clr) && !length(file_list_tss)) {
+  stop("No normalized files found (expected raw_clr.csv/raw_tss.csv and/or normalized_*_clr.csv / normalized_*_tss.csv) in ", output_folder)
+}
 
 # ==== NMDS frames: Aitchison on CLR ====
 compute_nmds_frames_aitch <- function(df, metadata, model.vars = c("batchid","phenotype"), k = 2) {
@@ -251,15 +265,26 @@ plots_clr <- lapply(names(file_list_clr), function(nm) {
 })
 names(plots_clr) <- names(file_list_clr)
 
-combined_clr <- wrap_plots(plots_clr, ncol = ncol_grid) +
-  plot_layout(guides = "collect") &
-  theme(legend.position = "bottom", legend.direction = "horizontal", legend.box = "vertical",
-        plot.margin = margin(8, 14, 8, 14))
+# ---- Combine & save (CLR) ----
+n_panels_clr <- length(plots_clr)
+if (n_panels_clr == 1L) {
+  combined_clr <- plots_clr[[1]] +
+    theme(legend.position = "bottom", legend.direction = "horizontal", legend.box = "vertical",
+          plot.margin = margin(8, 14, 8, 14))
+  w_clr <- 9.5; h_clr <- 6
+} else {
+  combined_clr <- wrap_plots(plots_clr, ncol = ncol_grid) +
+    plot_layout(guides = "collect") &
+    theme(legend.position = "bottom", legend.direction = "horizontal", legend.box = "vertical",
+          plot.margin = margin(8, 14, 8, 14))
+  w_clr <- 9.5 * min(ncol_grid, n_panels_clr)
+  h_clr <- 6   * ceiling(n_panels_clr / ncol_grid)
+}
 
 ggsave(file.path(output_folder, "nmds_aitchison.png"),
-       plot = combined_clr, width = 9.5 * ncol_grid, height = 6 * ceiling(length(plots_clr) / ncol_grid), dpi = 300)
+       plot = combined_clr, width = w_clr, height = h_clr, dpi = 300)
 ggsave(file.path(output_folder, "nmds_aitchison.tif"),
-       plot = combined_clr, width = 9.5 * ncol_grid, height = 6 * ceiling(length(plots_clr) / ncol_grid), dpi = 300, compression = "lzw")
+       plot = combined_clr, width = w_clr, height = h_clr, dpi = 300, compression = "lzw")
 
 # =========================
 # Set 2: NMDS — Bray–Curtis (TSS)
@@ -296,20 +321,29 @@ plots_tss <- lapply(names(file_list_tss), function(nm) {
 })
 names(plots_tss) <- names(file_list_tss)
 
-combined_tss <- wrap_plots(plots_tss, ncol = ncol_grid) +
-  plot_layout(guides = "collect") &
-  theme(legend.position = "bottom", legend.direction = "horizontal", legend.box = "vertical",
-        plot.margin = margin(8, 14, 8, 14))
+# ---- Combine & save (TSS) ----
+n_panels_tss <- length(plots_tss)
+if (n_panels_tss == 1L) {
+  combined_tss <- plots_tss[[1]] +
+    theme(legend.position = "bottom", legend.direction = "horizontal", legend.box = "vertical",
+          plot.margin = margin(8, 14, 8, 14))
+  w_tss <- 9.5; h_tss <- 6
+} else {
+  combined_tss <- wrap_plots(plots_tss, ncol = ncol_grid) +
+    plot_layout(guides = "collect") &
+    theme(legend.position = "bottom", legend.direction = "horizontal", legend.box = "vertical",
+          plot.margin = margin(8, 14, 8, 14))
+  w_tss <- 9.5 * min(ncol_grid, n_panels_tss)
+  h_tss <- 6   * ceiling(n_panels_tss / ncol_grid)
+}
 
 ggsave(file.path(output_folder, "nmds_braycurtis.png"),
-       plot = combined_tss, width = 9.5 * ncol_grid, height = 6 * ceiling(length(plots_tss) / ncol_grid), dpi = 300)
+       plot = combined_tss, width = w_tss, height = h_tss, dpi = 300)
 ggsave(file.path(output_folder, "nmds_braycurtis.tif"),
-       plot = combined_tss, width = 9.5 * ncol_grid, height = 6 * ceiling(length(plots_tss) / ncol_grid), dpi = 300, compression = "lzw")
+       plot = combined_tss, width = w_tss, height = h_tss, dpi = 300, compression = "lzw")
 
 # =========================
-# NMDS ranking
-# (uses ONLY NMDS outputs: coordinates + stress)
-# Requires: frames_cache_clr, frames_cache_tss, metadata, output_folder
+# NMDS ranking (with baseline-only assessment)
 # =========================
 
 # --- helpers ---
@@ -318,90 +352,189 @@ compute_centroids_nmds <- function(scores, batch_var = "batchid") {
     dplyr::group_by(!!rlang::sym(batch_var)) %>%
     dplyr::summarise(NMDS1 = mean(NMDS1), NMDS2 = mean(NMDS2), .groups = "drop")
 }
-
 compute_centroid_distances <- function(centroids) {
   if (nrow(centroids) < 2) return(NA_real_)
   as.numeric(mean(dist(centroids[, c("NMDS1", "NMDS2")], method = "euclidean")))
+}
+compute_within_dispersion_nmds <- function(scores, batch_var = "batchid") {
+  if (!all(c("NMDS1","NMDS2", batch_var) %in% names(scores))) return(NA_real_)
+  levs <- levels(scores[[batch_var]]); if (is.null(levs)) levs <- unique(scores[[batch_var]])
+  ws <- c(); ns <- c()
+  for (lev in levs) {
+    sub <- scores[scores[[batch_var]] == lev, c("NMDS1","NMDS2"), drop = FALSE]
+    n <- nrow(sub)
+    if (n < 2) next
+    d <- stats::dist(sub, method = "euclidean")
+    ws <- c(ws, mean(d)); ns <- c(ns, n)
+  }
+  if (!length(ws)) return(NA_real_)
+  stats::weighted.mean(ws, w = ns)
 }
 
 # Map “smaller is better” batch distance + “smaller is better” stress into [0,1] scores,
 # then combine via geometric mean (higher = better).
 nmds_metric_score <- function(batch_distance, stress, stress_cap = 0.30) {
   if (is.na(batch_distance) || is.na(stress)) return(NA_real_)
-  S_batch  <- 1 / (1 + batch_distance)                          # ↓distance → ↑score
+  S_batch  <- 1 / (1 + batch_distance)                           # ↓distance → ↑score
   S_stress <- pmax(0, 1 - pmin(stress, stress_cap) / stress_cap) # stress≤cap → in (0,1], >cap → 0
   sqrt(S_batch * S_stress)
 }
 
-# --- build per-method scores from NMDS caches ---
 methods_clr <- names(frames_cache_clr)
 methods_tss <- names(frames_cache_tss)
 all_methods <- union(methods_clr, methods_tss)
 
-rank_tbl <- dplyr::tibble(
-  Method = character(),
-  Batch_Distance_Aitchison = numeric(),
-  Batch_Distance_Bray      = numeric(),
-  NMDS_Stress_Aitchison    = numeric(),
-  NMDS_Stress_Bray         = numeric(),
-  Score_Aitchison          = numeric(),
-  Score_Bray               = numeric(),
-  Combined_Score           = numeric()
-)
+only_baseline <- (length(all_methods) == 1L) && identical(all_methods, "Before correction")
 
-for (m in all_methods) {
-  # Aitchison (CLR NMDS)
-  D_a <- NA_real_; S_a <- NA_real_; stress_a <- NA_real_
-  if (m %in% methods_clr) {
-    fr_a <- frames_cache_clr[[m]]
-    md_a <- metadata[match(fr_a$plot.df$sample_id, metadata$sample_id), , drop = FALSE]
-    scores_a <- fr_a$plot.df %>%
+if (only_baseline) {
+  # ===== Baseline-only assessment (no ranking) =====
+  assess_rows <- list()
+  
+  if ("Before correction" %in% methods_clr) {
+    fr <- frames_cache_clr[["Before correction"]]
+    md <- metadata[match(fr$plot.df$sample_id, metadata$sample_id), , drop = FALSE]
+    scores <- fr$plot.df %>%
       dplyr::select(sample_id, NMDS1, NMDS2) %>%
-      dplyr::mutate(batchid = factor(md_a$batchid))
-    cents_a <- compute_centroids_nmds(scores_a, "batchid")
-    D_a <- compute_centroid_distances(cents_a)
-    stress_a <- fr_a$stress
-    S_a <- nmds_metric_score(D_a, stress_a)
+      dplyr::mutate(batchid = factor(md$batchid))
+    cents <- compute_centroids_nmds(scores, "batchid")
+    D_between <- compute_centroid_distances(cents)
+    W_within  <- compute_within_dispersion_nmds(scores, "batchid")
+    stress    <- fr$stress
+    score     <- nmds_metric_score(D_between, stress)
+    needs_correction <- is.finite(D_between) && is.finite(W_within) && (D_between > W_within)
+    
+    assess_rows[["CLR"]] <- tibble::tibble(
+      Method            = "Before correction",
+      Geometry          = "Aitchison (CLR)",
+      Batch_Distance    = D_between,
+      Within_Dispersion = W_within,
+      NMDS_Stress       = stress,
+      Score             = score,
+      Needs_Correction  = needs_correction
+    )
   }
   
-  # Bray–Curtis (TSS NMDS)
-  D_b <- NA_real_; S_b <- NA_real_; stress_b <- NA_real_
-  if (m %in% methods_tss) {
-    fr_b <- frames_cache_tss[[m]]
-    md_b <- metadata[match(fr_b$plot.df$sample_id, metadata$sample_id), , drop = FALSE]
-    scores_b <- fr_b$plot.df %>%
+  if ("Before correction" %in% methods_tss) {
+    fr <- frames_cache_tss[["Before correction"]]
+    md <- metadata[match(fr$plot.df$sample_id, metadata$sample_id), , drop = FALSE]
+    scores <- fr$plot.df %>%
       dplyr::select(sample_id, NMDS1, NMDS2) %>%
-      dplyr::mutate(batchid = factor(md_b$batchid))
-    cents_b <- compute_centroids_nmds(scores_b, "batchid")
-    D_b <- compute_centroid_distances(cents_b)
-    stress_b <- fr_b$stress
-    S_b <- nmds_metric_score(D_b, stress_b)
+      dplyr::mutate(batchid = factor(md$batchid))
+    cents <- compute_centroids_nmds(scores, "batchid")
+    D_between <- compute_centroid_distances(cents)
+    W_within  <- compute_within_dispersion_nmds(scores, "batchid")
+    stress    <- fr$stress
+    score     <- nmds_metric_score(D_between, stress)
+    needs_correction <- is.finite(D_between) && is.finite(W_within) && (D_between > W_within)
+    
+    assess_rows[["TSS"]] <- tibble::tibble(
+      Method            = "Before correction",
+      Geometry          = "Bray–Curtis (TSS)",
+      Batch_Distance    = D_between,
+      Within_Dispersion = W_within,
+      NMDS_Stress       = stress,
+      Score             = score,
+      Needs_Correction  = needs_correction
+    )
   }
   
-  # Combine available NMDS metric scores (geometric mean; higher = better)
-  Combined <- dplyr::case_when(
-    !is.na(S_a) && !is.na(S_b) ~ sqrt(S_a * S_b),
-    !is.na(S_a)                ~ S_a,
-    !is.na(S_b)                ~ S_b,
-    TRUE                       ~ NA_real_
+  assess_df <- dplyr::bind_rows(assess_rows)
+  
+  # Combined view (geometric mean of available scores; OR on correction flags)
+  comb_score <- dplyr::case_when(
+    nrow(assess_df) >= 2 && all(is.finite(assess_df$Score)) ~ sqrt(prod(assess_df$Score)),
+    TRUE                                                    ~ max(assess_df$Score, na.rm = TRUE)
+  )
+  needs_corr_any <- any(assess_df$Needs_Correction, na.rm = TRUE)
+  
+  assess_df <- dplyr::bind_rows(
+    assess_df,
+    tibble::tibble(
+      Method            = "Before correction",
+      Geometry          = "Combined",
+      Batch_Distance    = NA_real_,
+      Within_Dispersion = NA_real_,
+      NMDS_Stress       = NA_real_,
+      Score             = comb_score,
+      Needs_Correction  = needs_corr_any
+    )
   )
   
-  rank_tbl <- dplyr::bind_rows(rank_tbl, dplyr::tibble(
-    Method = m,
-    Batch_Distance_Aitchison = D_a,
-    Batch_Distance_Bray      = D_b,
-    NMDS_Stress_Aitchison    = stress_a,
-    NMDS_Stress_Bray         = stress_b,
-    Score_Aitchison          = S_a,
-    Score_Bray               = S_b,
-    Combined_Score           = Combined
-  ))
+  print(assess_df, n = nrow(assess_df))
+  readr::write_csv(assess_df, file.path(output_folder, "nmds_raw_assessment.csv"))
+  
+  message(if (isTRUE(needs_corr_any)) {
+    "Assessment: Batch separation exceeds within-batch spread in at least one geometry — correction recommended."
+  } else {
+    "Assessment: Batch separation does not exceed within-batch spread — correction may not be necessary."
+  })
+  
+} else {
+  # ===== Multi-method ranking =====
+  rank_tbl <- dplyr::tibble(
+    Method = character(),
+    Batch_Distance_Aitchison = numeric(),
+    Batch_Distance_Bray      = numeric(),
+    NMDS_Stress_Aitchison    = numeric(),
+    NMDS_Stress_Bray         = numeric(),
+    Score_Aitchison          = numeric(),
+    Score_Bray               = numeric(),
+    Combined_Score           = numeric()
+  )
+  
+  for (m in all_methods) {
+    # Aitchison (CLR NMDS)
+    D_a <- NA_real_; S_a <- NA_real_; stress_a <- NA_real_
+    if (m %in% methods_clr) {
+      fr_a <- frames_cache_clr[[m]]
+      md_a <- metadata[match(fr_a$plot.df$sample_id, metadata$sample_id), , drop = FALSE]
+      scores_a <- fr_a$plot.df %>%
+        dplyr::select(sample_id, NMDS1, NMDS2) %>%
+        dplyr::mutate(batchid = factor(md_a$batchid))
+      cents_a <- compute_centroids_nmds(scores_a, "batchid")
+      D_a <- compute_centroid_distances(cents_a)
+      stress_a <- fr_a$stress
+      S_a <- nmds_metric_score(D_a, stress_a)
+    }
+    
+    # Bray–Curtis (TSS NMDS)
+    D_b <- NA_real_; S_b <- NA_real_; stress_b <- NA_real_
+    if (m %in% methods_tss) {
+      fr_b <- frames_cache_tss[[m]]
+      md_b <- metadata[match(fr_b$plot.df$sample_id, metadata$sample_id), , drop = FALSE]
+      scores_b <- fr_b$plot.df %>%
+        dplyr::select(sample_id, NMDS1, NMDS2) %>%
+        dplyr::mutate(batchid = factor(md_b$batchid))
+      cents_b <- compute_centroids_nmds(scores_b, "batchid")
+      D_b <- compute_centroid_distances(cents_b)
+      stress_b <- fr_b$stress
+      S_b <- nmds_metric_score(D_b, stress_b)
+    }
+    
+    # Combine available NMDS metric scores (geometric mean; higher = better)
+    Combined <- dplyr::case_when(
+      !is.na(S_a) && !is.na(S_b) ~ sqrt(S_a * S_b),
+      !is.na(S_a)                ~ S_a,
+      !is.na(S_b)                ~ S_b,
+      TRUE                       ~ NA_real_
+    )
+    
+    rank_tbl <- dplyr::bind_rows(rank_tbl, dplyr::tibble(
+      Method = m,
+      Batch_Distance_Aitchison = D_a,
+      Batch_Distance_Bray      = D_b,
+      NMDS_Stress_Aitchison    = stress_a,
+      NMDS_Stress_Bray         = stress_b,
+      Score_Aitchison          = S_a,
+      Score_Bray               = S_b,
+      Combined_Score           = Combined
+    ))
+  }
+  
+  ranked_nmds_only <- rank_tbl %>%
+    dplyr::arrange(dplyr::desc(Combined_Score)) %>%
+    dplyr::mutate(Rank = dplyr::row_number())
+  
+  print(ranked_nmds_only, n = nrow(ranked_nmds_only))
+  readr::write_csv(ranked_nmds_only, file.path(output_folder, "nmds_ranking.csv"))
 }
-
-ranked_nmds_only <- rank_tbl %>%
-  dplyr::arrange(dplyr::desc(Combined_Score)) %>%
-  dplyr::mutate(Rank = dplyr::row_number())
-
-print(ranked_nmds_only, n = nrow(ranked_nmds_only))
-readr::write_csv(ranked_nmds_only, file.path(output_folder, "nmds_ranking.csv"))
-

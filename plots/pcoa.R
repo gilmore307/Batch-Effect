@@ -95,24 +95,30 @@ if (!dir.exists(output_folder)) dir.create(output_folder, recursive = TRUE)
 metadata <- read_csv(file.path(output_folder, "metadata.csv"), show_col_types = FALSE) |>
   mutate(sample_id = as.character(sample_id))
 
-# Collect files by suffix
-clr_files <- list.files(output_folder, pattern = "^normalized_.*_clr\\.csv$", full.names = TRUE)
-tss_files <- list.files(output_folder, pattern = "^normalized_.*_tss\\.csv$", full.names = TRUE)
+# ---- Find normalized files ----
+clr_paths <- list.files(output_folder, pattern = "^normalized_.*_clr\\.csv$", full.names = TRUE)
+tss_paths <- list.files(output_folder, pattern = "^normalized_.*_tss\\.csv$", full.names = TRUE)
 
-# Add baseline raw if present (will be transformed appropriately in functions)
-raw_fp <- file.path(output_folder, "raw.csv")
-if (file.exists(raw_fp)) {
-  clr_files <- c(raw_fp, clr_files)
-  tss_files <- c(raw_fp, tss_files)
+# Fallback: if no suffix-specific outputs, use any normalized_*.csv for both
+if (!length(clr_paths) && !length(tss_paths)) {
+  any_paths <- list.files(output_folder, pattern = "^normalized_.*\\.csv$", full.names = TRUE)
+  clr_paths <- any_paths
+  tss_paths <- any_paths
 }
 
-# Named lists
-name_fun <- function(x, suffix) gsub(paste0("^normalized_|_", suffix, "\\.csv$"), "", basename(x))
-file_list_clr <- setNames(clr_files, ifelse(basename(clr_files) == "raw.csv", "Before correction", name_fun(clr_files, "clr")))
-file_list_tss <- setNames(tss_files, ifelse(basename(tss_files) == "raw.csv", "Before correction", name_fun(tss_files, "tss")))
+name_from <- function(paths, suffix) gsub(paste0("^normalized_|_", suffix, "\\.csv$"), "", basename(paths))
+file_list_clr <- setNames(clr_paths, if (length(clr_paths)) name_from(clr_paths, "clr") else character())
+file_list_tss <- setNames(tss_paths, if (length(tss_paths)) name_from(tss_paths, "tss") else character())
 
-if (!length(file_list_clr)) stop("No CLR files found (expected 'normalized_*_clr.csv').")
-if (!length(file_list_tss)) stop("No TSS files found (expected 'normalized_*_tss.csv').")
+# Include raw_clr.csv / raw_tss.csv as "Before correction" if present
+raw_clr_fp <- file.path(output_folder, "raw_clr.csv")
+raw_tss_fp <- file.path(output_folder, "raw_tss.csv")
+if (file.exists(raw_clr_fp)) file_list_clr <- c("Before correction" = raw_clr_fp, file_list_clr)
+if (file.exists(raw_tss_fp)) file_list_tss <- c("Before correction" = raw_tss_fp, file_list_tss)
+
+if (!length(file_list_clr) && !length(file_list_tss)) {
+  stop("No normalized files found (expected raw_clr.csv/raw_tss.csv and/or normalized_*_clr.csv / normalized_*_tss.csv) in ", output_folder)
+}
 
 # ==== PCoA frames (Aitchison on CLR) ====
 compute_pcoa_frames_aitch <- function(df, metadata, model.vars = c("batchid","phenotype"),
@@ -401,21 +407,33 @@ plots_clr <- lapply(names(file_list_clr), function(nm) {
 })
 names(plots_clr) <- names(file_list_clr)
 
-combined_clr <- wrap_plots(plots_clr, ncol = ncol_grid) +
-  plot_layout(guides = "collect") &
-  theme(
-    legend.position  = "bottom",
-    legend.direction = "horizontal",
-    legend.box       = "vertical",
-    plot.margin = margin(8, 14, 8, 14)
-  )
-
+# ---- Combine & save (CLR) ----
+n_panels_clr <- length(plots_clr)
+if (n_panels_clr == 1L) {
+  combined_clr <- plots_clr[[1]] +
+    theme(
+      legend.position  = "bottom",
+      legend.direction = "horizontal",
+      legend.box       = "vertical",
+      plot.margin = margin(8, 14, 8, 14)
+    )
+  w_clr <- 9.5; h_clr <- 6
+} else {
+  combined_clr <- wrap_plots(plots_clr, ncol = ncol_grid) +
+    plot_layout(guides = "collect") &
+    theme(
+      legend.position  = "bottom",
+      legend.direction = "horizontal",
+      legend.box       = "vertical",
+      plot.margin = margin(8, 14, 8, 14)
+    )
+  w_clr <- 9.5 * min(ncol_grid, n_panels_clr)
+  h_clr <- 6   * ceiling(n_panels_clr / ncol_grid)
+}
 ggsave(file.path(output_folder, "pcoa_aitchison.png"),
-       plot = combined_clr, width = 9.5 * ncol_grid, height = 6 * ceiling(length(plots_clr) / ncol_grid),
-       dpi = 300)
+       plot = combined_clr, width = w_clr, height = h_clr, dpi = 300)
 ggsave(file.path(output_folder, "pcoa_aitchison.tif"),
-       plot = combined_clr, width = 9.5 * ncol_grid, height = 6 * ceiling(length(plots_clr) / ncol_grid),
-       dpi = 300, compression = "lzw")
+       plot = combined_clr, width = w_clr, height = h_clr, dpi = 300, compression = "lzw")
 
 # =========================
 # Set 2: Bray–Curtis (TSS)
@@ -464,31 +482,36 @@ plots_tss <- lapply(names(file_list_tss), function(nm) {
 })
 names(plots_tss) <- names(file_list_tss)
 
-combined_tss <- wrap_plots(plots_tss, ncol = ncol_grid) +
-  plot_layout(guides = "collect") &
-  theme(
-    legend.position  = "bottom",
-    legend.direction = "horizontal",
-    legend.box       = "vertical",
-    plot.margin = margin(8, 14, 8, 14)
-  )
-
+# ---- Combine & save (TSS) ----
+n_panels_tss <- length(plots_tss)
+if (n_panels_tss == 1L) {
+  combined_tss <- plots_tss[[1]] +
+    theme(
+      legend.position  = "bottom",
+      legend.direction = "horizontal",
+      legend.box       = "vertical",
+      plot.margin = margin(8, 14, 8, 14)
+    )
+  w_tss <- 9.5; h_tss <- 6
+} else {
+  combined_tss <- wrap_plots(plots_tss, ncol = ncol_grid) +
+    plot_layout(guides = "collect") &
+    theme(
+      legend.position  = "bottom",
+      legend.direction = "horizontal",
+      legend.box       = "vertical",
+      plot.margin = margin(8, 14, 8, 14)
+    )
+  w_tss <- 9.5 * min(ncol_grid, n_panels_tss)
+  h_tss <- 6   * ceiling(n_panels_tss / ncol_grid)
+}
 ggsave(file.path(output_folder, "pcoa_braycurtis.png"),
-       plot = combined_tss, width = 9.5 * ncol_grid, height = 6 * ceiling(length(plots_tss) / ncol_grid),
-       dpi = 300)
+       plot = combined_tss, width = w_tss, height = h_tss, dpi = 300)
 ggsave(file.path(output_folder, "pcoa_braycurtis.tif"),
-       plot = combined_tss, width = 9.5 * ncol_grid, height = 6 * ceiling(length(plots_tss) / ncol_grid),
-       dpi = 300, compression = "lzw")
+       plot = combined_tss, width = w_tss, height = h_tss, dpi = 300, compression = "lzw")
 
 # =========================
 # Unified PCoA ranking (Aitchison + Bray combined)
-# - uses ONLY PCoA outputs you already computed:
-#   frames_cache_clr (Aitchison/CLR) and frames_cache_tss (Bray/TSS)
-# - ranks methods by a combined score:
-#     per-geometry score = (1 / (1 + batch_centroid_distance)) * coverage
-#     where coverage = (PCo1+PCo2 variance explained)/100
-#   combined score = geometric mean of available per-geometry scores
-#   (higher = better; smaller batch distance + higher coverage → better)
 # =========================
 
 compute_centroids_pcoa <- function(scores, batch_var = "batchid") {
@@ -500,84 +523,187 @@ compute_centroid_distances <- function(centroids) {
   if (nrow(centroids) < 2) return(NA_real_)
   as.numeric(mean(dist(centroids[, c("PCo1", "PCo2")], method = "euclidean")))
 }
+# Weighted mean within-batch pairwise distance on PCo1–PCo2
+compute_within_dispersion_pcoa <- function(scores, batch_var = "batchid") {
+  if (!all(c("PCo1","PCo2", batch_var) %in% names(scores))) return(NA_real_)
+  levs <- levels(scores[[batch_var]])
+  if (is.null(levs)) levs <- unique(scores[[batch_var]])
+  ws <- c(); ns <- c()
+  for (lev in levs) {
+    sub <- scores[scores[[batch_var]] == lev, c("PCo1","PCo2"), drop = FALSE]
+    n <- nrow(sub)
+    if (n < 2) next
+    d <- stats::dist(sub, method = "euclidean")
+    ws <- c(ws, mean(d))
+    ns <- c(ns, n)
+  }
+  if (!length(ws)) return(NA_real_)
+  stats::weighted.mean(ws, w = ns)
+}
 pcoa_metric_score <- function(batch_distance, coverage) {
   if (is.na(batch_distance) || is.na(coverage)) return(NA_real_)
-  coverage <- max(0, min(1, coverage))                 # clamp to [0,1]
-  (1 / (1 + batch_distance)) * coverage                # higher = better
+  coverage <- max(0, min(1, coverage))  # clamp [0,1]
+  (1 / (1 + batch_distance)) * coverage  # higher = better
 }
 
 methods_clr <- names(frames_cache_clr)
 methods_tss <- names(frames_cache_tss)
 all_methods <- union(methods_clr, methods_tss)
 
-rank_tbl <- dplyr::tibble(
-  Method = character(),
-  Batch_Distance_Aitchison = numeric(),
-  Coverage_Aitchison       = numeric(),
-  Score_Aitchison          = numeric(),
-  Batch_Distance_Bray      = numeric(),
-  Coverage_Bray            = numeric(),
-  Score_Bray               = numeric(),
-  Combined_Score           = numeric()
-)
+only_baseline <- (length(all_methods) == 1L) && identical(all_methods, "Before correction")
 
-for (m in all_methods) {
-  # ----- Aitchison/CLR -----
-  D_a <- NA_real_; Cov_a <- NA_real_; S_a <- NA_real_
-  if (m %in% methods_clr) {
-    fr_a <- frames_cache_clr[[m]]
-    # centroid distance on PCo1/PCo2
-    md_a <- metadata[match(fr_a$plot.df$sample_id, metadata$sample_id), , drop = FALSE]
-    scores_a <- fr_a$plot.df %>%
+if (only_baseline) {
+  # ===== Baseline-only assessment (no ranking) =====
+  assess_rows <- list()
+  
+  if ("Before correction" %in% methods_clr) {
+    fr <- frames_cache_clr[["Before correction"]]
+    md <- metadata[match(fr$plot.df$sample_id, metadata$sample_id), , drop = FALSE]
+    scores <- fr$plot.df %>%
       dplyr::select(sample_id, PCo1, PCo2) %>%
-      dplyr::mutate(batchid = factor(md_a$batchid))
-    cents_a <- compute_centroids_pcoa(scores_a, "batchid")
-    D_a <- compute_centroid_distances(cents_a)
-    # coverage from var.explained
-    ve_a <- fr_a$metric.df$var.explained
-    Cov_a <- sum(ve_a[1:min(2, length(ve_a))], na.rm = TRUE) / 100
-    S_a <- pcoa_metric_score(D_a, Cov_a)
+      dplyr::mutate(batchid = factor(md$batchid))
+    cents <- compute_centroids_pcoa(scores, "batchid")
+    D_between <- compute_centroid_distances(cents)
+    W_within  <- compute_within_dispersion_pcoa(scores, "batchid")
+    ve <- fr$metric.df$var.explained
+    coverage2 <- sum(ve[1:min(2, length(ve))], na.rm = TRUE) / 100
+    score <- pcoa_metric_score(D_between, coverage2)
+    needs_correction <- is.finite(D_between) && is.finite(W_within) && (D_between > W_within)
+    
+    assess_rows[["CLR"]] <- tibble::tibble(
+      Method            = "Before correction",
+      Geometry          = "Aitchison (CLR)",
+      Batch_Distance    = D_between,
+      Within_Dispersion = W_within,
+      Coverage_PC1_PC2  = coverage2,
+      Score             = score,
+      Needs_Correction  = needs_correction
+    )
   }
   
-  # ----- Bray–Curtis/TSS -----
-  D_b <- NA_real_; Cov_b <- NA_real_; S_b <- NA_real_
-  if (m %in% methods_tss) {
-    fr_b <- frames_cache_tss[[m]]
-    md_b <- metadata[match(fr_b$plot.df$sample_id, metadata$sample_id), , drop = FALSE]
-    scores_b <- fr_b$plot.df %>%
+  if ("Before correction" %in% methods_tss) {
+    fr <- frames_cache_tss[["Before correction"]]
+    md <- metadata[match(fr$plot.df$sample_id, metadata$sample_id), , drop = FALSE]
+    scores <- fr$plot.df %>%
       dplyr::select(sample_id, PCo1, PCo2) %>%
-      dplyr::mutate(batchid = factor(md_b$batchid))
-    cents_b <- compute_centroids_pcoa(scores_b, "batchid")
-    D_b <- compute_centroid_distances(cents_b)
-    ve_b <- fr_b$metric.df$var.explained
-    Cov_b <- sum(ve_b[1:min(2, length(ve_b))], na.rm = TRUE) / 100
-    S_b <- pcoa_metric_score(D_b, Cov_b)
+      dplyr::mutate(batchid = factor(md$batchid))
+    cents <- compute_centroids_pcoa(scores, "batchid")
+    D_between <- compute_centroid_distances(cents)
+    W_within  <- compute_within_dispersion_pcoa(scores, "batchid")
+    ve <- fr$metric.df$var.explained
+    coverage2 <- sum(ve[1:min(2, length(ve))], na.rm = TRUE) / 100
+    score <- pcoa_metric_score(D_between, coverage2)
+    needs_correction <- is.finite(D_between) && is.finite(W_within) && (D_between > W_within)
+    
+    assess_rows[["TSS"]] <- tibble::tibble(
+      Method            = "Before correction",
+      Geometry          = "Bray–Curtis (TSS)",
+      Batch_Distance    = D_between,
+      Within_Dispersion = W_within,
+      Coverage_PC1_PC2  = coverage2,
+      Score             = score,
+      Needs_Correction  = needs_correction
+    )
   }
   
-  # Geometric mean of available per-geometry scores (higher = better)
-  Combined <- dplyr::case_when(
-    !is.na(S_a) && !is.na(S_b) ~ sqrt(S_a * S_b),
-    !is.na(S_a)                ~ S_a,
-    !is.na(S_b)                ~ S_b,
-    TRUE                       ~ NA_real_
+  assess_df <- dplyr::bind_rows(assess_rows)
+  
+  # Combined view (geometric mean of available scores; OR on correction flags)
+  comb_score <- dplyr::case_when(
+    nrow(assess_df) >= 2 && all(is.finite(assess_df$Score)) ~ sqrt(prod(assess_df$Score)),
+    TRUE                                                    ~ max(assess_df$Score, na.rm = TRUE)
+  )
+  needs_corr_any <- any(assess_df$Needs_Correction, na.rm = TRUE)
+  
+  assess_df <- dplyr::bind_rows(
+    assess_df,
+    tibble::tibble(
+      Method            = "Before correction",
+      Geometry          = "Combined",
+      Batch_Distance    = NA_real_,
+      Within_Dispersion = NA_real_,
+      Coverage_PC1_PC2  = NA_real_,
+      Score             = comb_score,
+      Needs_Correction  = needs_corr_any
+    )
   )
   
-  rank_tbl <- dplyr::bind_rows(rank_tbl, dplyr::tibble(
-    Method = m,
-    Batch_Distance_Aitchison = D_a,
-    Coverage_Aitchison       = Cov_a,
-    Score_Aitchison          = S_a,
-    Batch_Distance_Bray      = D_b,
-    Coverage_Bray            = Cov_b,
-    Score_Bray               = S_b,
-    Combined_Score           = Combined
-  ))
+  print(assess_df, n = nrow(assess_df))
+  readr::write_csv(assess_df, file.path(output_folder, "pcoa_raw_assessment.csv"))
+  
+  message(if (isTRUE(needs_corr_any)) {
+    "Assessment: Batch separation exceeds within-batch spread in at least one geometry — correction recommended."
+  } else {
+    "Assessment: Batch separation does not exceed within-batch spread — correction may not be necessary."
+  })
+  
+} else {
+  # ===== Multi-method ranking (as before) =====
+  rank_tbl <- dplyr::tibble(
+    Method = character(),
+    Batch_Distance_Aitchison = numeric(),
+    Coverage_Aitchison       = numeric(),
+    Score_Aitchison          = numeric(),
+    Batch_Distance_Bray      = numeric(),
+    Coverage_Bray            = numeric(),
+    Score_Bray               = numeric(),
+    Combined_Score           = numeric()
+  )
+  
+  for (m in union(names(frames_cache_clr), names(frames_cache_tss))) {
+    # ----- Aitchison/CLR -----
+    D_a <- NA_real_; Cov_a <- NA_real_; S_a <- NA_real_
+    if (m %in% names(frames_cache_clr)) {
+      fr_a <- frames_cache_clr[[m]]
+      md_a <- metadata[match(fr_a$plot.df$sample_id, metadata$sample_id), , drop = FALSE]
+      scores_a <- fr_a$plot.df %>%
+        dplyr::select(sample_id, PCo1, PCo2) %>%
+        dplyr::mutate(batchid = factor(md_a$batchid))
+      cents_a <- compute_centroids_pcoa(scores_a, "batchid")
+      D_a <- compute_centroid_distances(cents_a)
+      ve_a <- fr_a$metric.df$var.explained
+      Cov_a <- sum(ve_a[1:min(2, length(ve_a))], na.rm = TRUE) / 100
+      S_a <- pcoa_metric_score(D_a, Cov_a)
+    }
+    
+    # ----- Bray–Curtis/TSS -----
+    D_b <- NA_real_; Cov_b <- NA_real_; S_b <- NA_real_
+    if (m %in% names(frames_cache_tss)) {
+      fr_b <- frames_cache_tss[[m]]
+      md_b <- metadata[match(fr_b$plot.df$sample_id, metadata$sample_id), , drop = FALSE]
+      scores_b <- fr_b$plot.df %>%
+        dplyr::select(sample_id, PCo1, PCo2) %>%
+        dplyr::mutate(batchid = factor(md_b$batchid))
+      cents_b <- compute_centroids_pcoa(scores_b, "batchid")
+      D_b <- compute_centroid_distances(cents_b)
+      ve_b <- fr_b$metric.df$var.explained
+      Cov_b <- sum(ve_b[1:min(2, length(ve_b))], na.rm = TRUE) / 100
+      S_b <- pcoa_metric_score(D_b, Cov_b)
+    }
+    
+    Combined <- dplyr::case_when(
+      !is.na(S_a) && !is.na(S_b) ~ sqrt(S_a * S_b),
+      !is.na(S_a)                ~ S_a,
+      !is.na(S_b)                ~ S_b,
+      TRUE                       ~ NA_real_
+    )
+    
+    rank_tbl <- dplyr::bind_rows(rank_tbl, dplyr::tibble(
+      Method = m,
+      Batch_Distance_Aitchison = D_a,
+      Coverage_Aitchison       = Cov_a,
+      Score_Aitchison          = S_a,
+      Batch_Distance_Bray      = D_b,
+      Coverage_Bray            = Cov_b,
+      Score_Bray               = S_b,
+      Combined_Score           = Combined
+    ))
+  }
+  
+  ranked_pcoa_unified <- rank_tbl %>%
+    dplyr::arrange(dplyr::desc(Combined_Score)) %>%
+    dplyr::mutate(Rank = dplyr::row_number())
+  
+  print(ranked_pcoa_unified, n = nrow(ranked_pcoa_unified))
+  readr::write_csv(ranked_pcoa_unified, file.path(output_folder, "pcoa_ranking.csv"))
 }
-
-ranked_pcoa_unified <- rank_tbl %>%
-  dplyr::arrange(dplyr::desc(Combined_Score)) %>%
-  dplyr::mutate(Rank = dplyr::row_number())
-
-print(ranked_pcoa_unified, n = nrow(ranked_pcoa_unified))
-readr::write_csv(ranked_pcoa_unified, file.path(output_folder, "pcoa_ranking.csv"))
-

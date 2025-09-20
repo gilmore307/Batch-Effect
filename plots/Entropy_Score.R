@@ -28,6 +28,9 @@ KNN_PER_LABEL <- 100
 # EBM labels column (batch mixing uses batches)
 LABEL_COL <- "batchid"
 
+# Baseline-only decision threshold (higher EBM = better mixing)
+EBM_THRESHOLD <- 0.35
+
 set.seed(42)  # uwot uses global RNG
 
 # --------- Load metadata ---------
@@ -37,17 +40,20 @@ if (!(LABEL_COL %in% names(metadata))) {
   stop(sprintf("metadata.csv must contain a '%s' column.", LABEL_COL))
 }
 
-# --------- Collect CLR files (matches your PCA loader) ---------
+# --------- Collect CLR files ---------
 clr_paths <- list.files(output_folder, pattern = "^normalized_.*_clr\\.csv$", full.names = TRUE)
-raw_fp <- file.path(output_folder, "raw.csv")
-if (file.exists(raw_fp)) clr_paths <- c(raw_fp, clr_paths)
-if (!length(clr_paths)) stop("No CLR files found (expected 'normalized_*_clr.csv' or raw.csv).")
 
-name_fun <- function(x) gsub("^normalized_|_clr\\.csv$", "", basename(x))
-file_list <- setNames(
-  clr_paths,
-  ifelse(basename(clr_paths) == "raw.csv", "Before Correction", name_fun(clr_paths))
-)
+# include raw_clr.csv (as baseline) if present
+raw_clr_fp <- file.path(output_folder, "raw_clr.csv")
+if (file.exists(raw_clr_fp)) clr_paths <- c(raw_clr_fp, clr_paths)
+
+if (!length(clr_paths)) stop("No CLR matrices found (expected 'raw_clr.csv' or 'normalized_*_clr.csv').")
+
+method_names <- ifelse(basename(clr_paths) == "raw_clr.csv",
+                       "Before correction",
+                       gsub("^normalized_|_clr\\.csv$", "", basename(clr_paths)))
+file_list <- setNames(clr_paths, method_names)
+method_levels <- names(file_list)  # lock original order for plotting
 
 # --------- Helpers ---------
 `%||%` <- function(a,b) if (is.null(a)) b else a
@@ -55,11 +61,11 @@ file_list <- setNames(
 safe_numeric_matrix <- function(df) {
   num <- dplyr::select(df, where(is.numeric))
   if (!ncol(num)) return(matrix(numeric(0), nrow = nrow(df)))
-  keep <- vapply(num, function(z) all(is.finite(z)) && sd(z) > 0, logical(1))
+  keep <- vapply(num, function(z) all(is.finite(z)) && sd(z, na.rm = TRUE) > 0, logical(1))
   as.matrix(num[, keep, drop = FALSE])
 }
 
-# CLR transform (used for raw.csv or any non-CLR input)
+# CLR transform (used for raw or any non-CLR input)
 safe_closure <- function(X) {
   X <- as.matrix(X)
   X[!is.finite(X)] <- 0
@@ -138,8 +144,7 @@ pretty_metric <- function(m) {
   m <- tolower(m)
   if (m == "euclidean") return("Euclidean (Aitchison)")
   if (m == "cosine")    return("Cosine")
-  mbecUpper <- paste0(toupper(substr(m,1,1)), substr(m,2,nchar(m)))
-  return(mbecUpper)
+  paste0(toupper(substr(m,1,1)), substr(m,2,nchar(m)))
 }
 
 # --------- Compute EBM per CLR matrix ---------
@@ -189,38 +194,81 @@ for (nm in names(file_list)) {
   m  <- out$mean_entropy
   pm <- out$pool_means
   n  <- length(pm)
-  se <- if (n > 1) stats::sd(pm) / sqrt(n) else 0
+  se <- if (n > 1) stats::sd(pm, na.rm = TRUE) / sqrt(n) else 0
   ci_lo <- max(0, m - 1.96 * se)
   ci_hi <- min(1, m + 1.96 * se)
   
   ebm_tbl <- bind_rows(ebm_tbl, tibble(Method = nm, EBM = m, CI95_lo = ci_lo, CI95_hi = ci_hi))
 }
 
-# --------- Rank, save ---------
-ebm_ranked <- rank_methods_ebm(ebm_tbl)
-readr::write_csv(ebm_ranked, file.path(output_folder, "ebm_ranking.csv"))
-print(ebm_ranked, n = nrow(ebm_ranked))
+# --------- Save/plot with special handling for baseline-only ---------
+only_baseline <- length(method_levels) == 1L && identical(method_levels, "Before correction")
 
-# --------- Plot (AS-style) with subtitle IN the ggplot block ---------
-p_ebm <- ggplot(ebm_ranked, aes(x = reorder(Method, EBM), y = EBM, fill = Method)) +
-  geom_col(width = 0.72, color = "white", linewidth = 0.4, show.legend = FALSE) +
-  geom_text(aes(label = sprintf("%.3f", EBM)), vjust = -0.4, size = 3.2) +
-  scale_y_continuous(limits = c(0, 1.05), expand = expansion(mult = c(0, 0.02))) +
-  labs(
-    title = "Batch Entropy Mixing (kNN on UMAP)",
-    subtitle = sprintf(
-      "Labels=%s • UMAP(metric=%s, n_neighbors=%d, min_dist=%.2f)",
-      LABEL_COL, pretty_metric(UMAP_METRIC), UMAP_NEIGHB, UMAP_MIN_DIST
-    ),
-    x = "Method",
-    y = "EBM (0–1, higher = better mixing)"
-  ) +
-  theme_bw() +
-  theme(
-    axis.text.x = element_text(angle = 45, hjust = 1),
-    panel.grid.major.x = element_blank(),
-    panel.grid.minor   = element_blank()
-  )
-
-ggsave(file.path(output_folder, "ebm.png"), p_ebm, width = 8.5, height = 5.2, dpi = 300)
-ggsave(file.path(output_folder, "ebm.tif"), p_ebm, width = 8.5, height = 5.2, dpi = 300, compression = "lzw")
+if (only_baseline) {
+  base_row <- ebm_tbl %>% filter(Method == "Before correction")
+  if (nrow(base_row) == 0) stop("No EBM computed for 'Before correction'.")
+  
+  base_row <- base_row %>% mutate(Needs_Correction = EBM < EBM_THRESHOLD)
+  readr::write_csv(base_row, file.path(output_folder, "ebm_raw_assessment.csv"))
+  print(base_row)
+  
+  plot_df <- base_row %>% mutate(Method = factor(Method, levels = method_levels))
+  p_ebm <- ggplot(plot_df, aes(x = Method, y = EBM, fill = Method)) +
+    geom_col(width = 0.72, color = "white", linewidth = 0.4, show.legend = FALSE) +
+    geom_text(aes(label = sprintf("%.3f", EBM)), vjust = -0.4, size = 3.2) +
+    scale_y_continuous(limits = c(0, 1.05), expand = expansion(mult = c(0, 0.02))) +
+    labs(
+      title = "Batch Entropy Mixing (kNN on UMAP) — baseline",
+      subtitle = sprintf(
+        "Labels=%s • UMAP(metric=%s, n_neighbors=%d, min_dist=%.2f)",
+        LABEL_COL, pretty_metric(UMAP_METRIC), UMAP_NEIGHB, UMAP_MIN_DIST
+      ),
+      x = "Method",
+      y = "EBM (0–1, higher = better mixing)"
+    ) +
+    theme_bw() +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      panel.grid.major.x = element_blank(),
+      panel.grid.minor   = element_blank()
+    )
+  
+  ggsave(file.path(output_folder, "ebm.png"), p_ebm, width = 6.5, height = 4.6, dpi = 300)
+  ggsave(file.path(output_folder, "ebm.tif"), p_ebm, width = 6.5, height = 4.6, dpi = 300, compression = "lzw")
+  
+  if (isTRUE(base_row$Needs_Correction[1])) {
+    message(sprintf("Baseline EBM = %.3f < %.2f — correction recommended.", base_row$EBM[1], EBM_THRESHOLD))
+  } else {
+    message(sprintf("Baseline EBM = %.3f ≥ %.2f — correction may not be necessary.", base_row$EBM[1], EBM_THRESHOLD))
+  }
+  
+} else {
+  # Multiple methods: write a numeric ranking CSV, but KEEP ORIGINAL ORDER in the plot
+  ebm_ranked <- rank_methods_ebm(ebm_tbl)
+  readr::write_csv(ebm_ranked, file.path(output_folder, "ebm_ranking.csv"))
+  print(ebm_ranked, n = nrow(ebm_ranked))
+  
+  plot_df <- ebm_tbl %>% mutate(Method = factor(Method, levels = method_levels))
+  p_ebm <- ggplot(plot_df, aes(x = Method, y = EBM, fill = Method)) +
+    geom_col(width = 0.72, color = "white", linewidth = 0.4, show.legend = FALSE) +
+    geom_text(aes(label = sprintf("%.3f", EBM)), vjust = -0.4, size = 3.2) +
+    scale_y_continuous(limits = c(0, 1.05), expand = expansion(mult = c(0, 0.02))) +
+    labs(
+      title = "Batch Entropy Mixing (kNN on UMAP)",
+      subtitle = sprintf(
+        "Labels=%s • UMAP(metric=%s, n_neighbors=%d, min_dist=%.2f)",
+        LABEL_COL, pretty_metric(UMAP_METRIC), UMAP_NEIGHB, UMAP_MIN_DIST
+      ),
+      x = "Method",
+      y = "EBM (0–1, higher = better mixing)"
+    ) +
+    theme_bw() +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      panel.grid.major.x = element_blank(),
+      panel.grid.minor   = element_blank()
+    )
+  
+  ggsave(file.path(output_folder, "ebm.png"), p_ebm, width = 8.5, height = 5.2, dpi = 300)
+  ggsave(file.path(output_folder, "ebm.tif"), p_ebm, width = 8.5, height = 5.2, dpi = 300, compression = "lzw")
+}

@@ -23,25 +23,29 @@ if (!dir.exists(output_folder)) dir.create(output_folder, recursive = TRUE)
 metadata <- read_csv(file.path(output_folder, "metadata.csv"), show_col_types = FALSE) |>
   mutate(sample_id = as.character(sample_id))
 
-# Collect files by suffix
+# ---- Find normalized files ----
 clr_paths <- list.files(output_folder, pattern = "^normalized_.*_clr\\.csv$", full.names = TRUE)
 tss_paths <- list.files(output_folder, pattern = "^normalized_.*_tss\\.csv$", full.names = TRUE)
 
-# Include raw.csv as "Before correction" in both sets if present
-raw_fp <- file.path(output_folder, "raw.csv")
-if (file.exists(raw_fp)) {
-  clr_paths <- c(raw_fp, clr_paths)
-  tss_paths <- c(raw_fp, tss_paths)
+# Fallback: if no suffix-specific outputs, use any normalized_*.csv for both
+if (!length(clr_paths) && !length(tss_paths)) {
+  any_paths <- list.files(output_folder, pattern = "^normalized_.*\\.csv$", full.names = TRUE)
+  clr_paths <- any_paths
+  tss_paths <- any_paths
 }
 
-name_from <- function(paths, suffix)
-  gsub(paste0("^normalized_|_", suffix, "\\.csv$"), "", basename(paths))
+name_from <- function(paths, suffix) gsub(paste0("^normalized_|_", suffix, "\\.csv$"), "", basename(paths))
+file_list_clr <- setNames(clr_paths, if (length(clr_paths)) name_from(clr_paths, "clr") else character())
+file_list_tss <- setNames(tss_paths, if (length(tss_paths)) name_from(tss_paths, "tss") else character())
 
-file_list_clr <- setNames(clr_paths, ifelse(basename(clr_paths) == "raw.csv", "Before correction", name_from(clr_paths, "clr")))
-file_list_tss <- setNames(tss_paths, ifelse(basename(tss_paths) == "raw.csv", "Before correction", name_from(tss_paths, "tss")))
+# Include raw_clr.csv / raw_tss.csv as "Before correction" if present
+raw_clr_fp <- file.path(output_folder, "raw_clr.csv")
+raw_tss_fp <- file.path(output_folder, "raw_tss.csv")
+if (file.exists(raw_clr_fp)) file_list_clr <- c("Before correction" = raw_clr_fp, file_list_clr)
+if (file.exists(raw_tss_fp)) file_list_tss <- c("Before correction" = raw_tss_fp, file_list_tss)
 
 if (!length(file_list_clr) && !length(file_list_tss)) {
-  stop("No normalized files found (expected normalized_*_clr.csv and/or normalized_*_tss.csv).")
+  stop("No normalized files found (expected raw_clr.csv/raw_tss.csv and/or normalized_*_clr.csv / normalized_*_tss.csv) in ", output_folder)
 }
 
 # --------- Helpers (CLR + safe R^2) ---------
@@ -203,9 +207,12 @@ plot_prda_with_table <- function(parts_df, file_list, title_prefix, outfile_pref
   
   p <- ggplot(parts_df, aes(x = Method, y = Fraction, fill = Component)) +
     geom_col(width = 0.72, color = "white", linewidth = 0.4) +
-    scale_fill_manual(values = cols,
-                      breaks = c("Residuals","Batch","Intersection","Treatment"),
-                      name = "Variation sources") +
+    scale_fill_manual(
+      values = cols,
+      breaks = component_order,   # c("Treatment","Intersection","Batch","Residuals")
+      limits = component_order,   # lock the scale order
+      name   = "Variation sources"
+    )+
     scale_y_continuous(labels = scales::percent_format(accuracy = 1),
                        limits = c(0, 1.05), expand = expansion(mult = c(0, 0))) +
     labs(x = "Methods", y = "Explained variance (%)",
@@ -375,23 +382,72 @@ tb_bra <- if (exists("parts_df_bray")) score_tb(extract_TB(parts_df_bray)) %>%
          Batch_Bray     = Batch,
          Score_Bray     = Score) else NULL
 
-# Join available geometries
-unified <- dplyr::full_join(tb_ait, tb_bra, by = "Method")
+# Determine if we only have the baseline ("Before correction")
+avail_methods <- unique(c(
+  if (exists("parts_df_aitch")) unique(parts_df_aitch$Method) else character(),
+  if (exists("parts_df_bray"))  unique(parts_df_bray$Method)  else character()
+))
+only_baseline <- length(avail_methods) == 1L && identical(avail_methods, "Before correction")
 
-# Geometric mean of available scores
-unified <- unified %>%
-  rowwise() %>%
-  mutate(
-    Combined_Score = {
-      s <- c(Score_Aitchison, Score_Bray)
-      s <- s[is.finite(s)]
-      if (!length(s)) NA_real_ else exp(mean(log(s)))
-    }
-  ) %>%
-  ungroup() %>%
-  arrange(desc(Combined_Score)) %>%
-  mutate(Rank = row_number())
-
-print(unified, n = nrow(unified))
-readr::write_csv(unified, file.path(output_folder, "pRDA_ranking.csv"))
-
+if (only_baseline) {
+  # ---- Baseline-only assessment (no ranking) ----
+  assess_rows <- list()
+  
+  if (exists("parts_df_aitch")) {
+    pf <- ensure_components(parts_df_aitch) %>% filter(Method == "Before correction")
+    tr <- sum(pf$Fraction[pf$Component == "Treatment"], na.rm = TRUE)
+    bt <- sum(pf$Fraction[pf$Component == "Batch"],     na.rm = TRUE)
+    it <- sum(pf$Fraction[pf$Component == "Intersection"], na.rm = TRUE)
+    rs <- sum(pf$Fraction[pf$Component == "Residuals"],    na.rm = TRUE)
+    needs <- (is.finite(bt) && is.finite(tr) && (bt >= tr)) || (bt > 0.05)
+    assess_rows[["Aitchison (CLR)"]] <- tibble::tibble(
+      Geometry = "Aitchison (CLR)",
+      Treatment = tr, Batch = bt, Intersection = it, Residuals = rs,
+      Score = if (is.finite(tr) && is.finite(bt)) tr / (tr + bt + 1e-12) else NA_real_,
+      Needs_Correction = needs
+    )
+  }
+  
+  if (exists("parts_df_bray")) {
+    pf <- ensure_components(parts_df_bray) %>% filter(Method == "Before correction")
+    tr <- sum(pf$Fraction[pf$Component == "Treatment"], na.rm = TRUE)
+    bt <- sum(pf$Fraction[pf$Component == "Batch"],     na.rm = TRUE)
+    it <- sum(pf$Fraction[pf$Component == "Intersection"], na.rm = TRUE)
+    rs <- sum(pf$Fraction[pf$Component == "Residuals"],    na.rm = TRUE)
+    needs <- (is.finite(bt) && is.finite(tr) && (bt >= tr)) || (bt > 0.05)
+    assess_rows[["Bray–Curtis (TSS)"]] <- tibble::tibble(
+      Geometry = "Bray–Curtis (TSS)",
+      Treatment = tr, Batch = bt, Intersection = it, Residuals = rs,
+      Score = if (is.finite(tr) && is.finite(bt)) tr / (tr + bt + 1e-12) else NA_real_,
+      Needs_Correction = needs
+    )
+  }
+  
+  assess_df <- dplyr::bind_rows(assess_rows)
+  print(assess_df, n = nrow(assess_df))
+  readr::write_csv(assess_df, file.path(output_folder, "pRDA_raw_assessment.csv"))
+  
+  if (any(assess_df$Needs_Correction, na.rm = TRUE)) {
+    message("pRDA baseline: Batch fraction ≥ Treatment (and/or Batch > 0.05) in at least one geometry — correction recommended.")
+  } else {
+    message("pRDA baseline: Batch fraction appears modest relative to Treatment — correction may not be necessary.")
+  }
+  
+} else {
+  # ---- Normal multi-method ranking ----
+  unified <- dplyr::full_join(tb_ait, tb_bra, by = "Method") %>%
+    rowwise() %>%
+    mutate(
+      Combined_Score = {
+        s <- c(Score_Aitchison, Score_Bray)
+        s <- s[is.finite(s)]
+        if (!length(s)) NA_real_ else exp(mean(log(s)))
+      }
+    ) %>%
+    ungroup() %>%
+    arrange(desc(Combined_Score)) %>%
+    mutate(Rank = row_number())
+  
+  print(unified, n = nrow(unified))
+  readr::write_csv(unified, file.path(output_folder, "pRDA_ranking.csv"))
+}

@@ -232,26 +232,19 @@ metadata <- readr::read_csv(file.path(output_folder, "metadata.csv"), show_col_t
 cat("≈ Global iLISI:", global_lisi_norm(metadata$batchid), "\n")
 cat("≈ Global cLISI:", global_lisi_norm(metadata$phenotype), "\n")
 
-# Matrices: normalized_*.csv (+ optional raw baseline as "Before correction")
-file_paths <- list.files(
-  output_folder,
-  pattern = "^normalized_.*_clr\\.csv$",
-  full.names = TRUE
-)
+# --------- Collect CLR files ---------
+clr_paths <- list.files(output_folder, pattern = "^normalized_.*_clr\\.csv$", full.names = TRUE)
 
-# Clean names (remove prefix + suffix)
-file_names <- gsub("^normalized_|_clr\\.csv$", "", basename(file_paths))
-file_list  <- setNames(file_paths, file_names)
+# include raw_clr.csv (as baseline) if present
+raw_clr_fp <- file.path(output_folder, "raw_clr.csv")
+if (file.exists(raw_clr_fp)) clr_paths <- c(raw_clr_fp, clr_paths)
 
-# Prepend raw.csv as "Before Correction" if present
-raw_fp <- file.path(output_folder, "raw.csv")
-if (file.exists(raw_fp)) {
-  file_list <- c("Before Correction" = raw_fp, file_list)
-}
+if (!length(clr_paths)) stop("No CLR matrices found (expected 'raw_clr.csv' or 'normalized_*_clr.csv').")
 
-if (length(file_list) == 0) {
-  stop("No CLR files found. Expected files matching 'normalized_*_clr.csv' in ", output_folder)
-}
+method_names <- ifelse(basename(clr_paths) == "raw_clr.csv",
+                       "Before correction",
+                       gsub("^normalized_|_clr\\.csv$", "", basename(clr_paths)))
+file_list <- setNames(clr_paths, method_names)
 
 # Optionally auto-select k
 if (opt_kauto) {

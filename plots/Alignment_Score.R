@@ -17,6 +17,7 @@ if (!dir.exists(output_folder)) dir.create(output_folder, recursive = TRUE)
 K_NEIGHBORS   <- 10     # k in kNN
 VAR_PROP_MIN  <- 0.95   # keep PCs explaining at least 95% variance
 MAX_PCS       <- 10     # safety cap
+AS_THRESHOLD  <- 0.60   # if baseline AS < 0.60, recommend correction
 set.seed(42)
 
 # --------- Load metadata ---------
@@ -28,16 +29,19 @@ if (!("batchid" %in% names(metadata)))
 # --------- Collect CLR files ---------
 clr_paths <- list.files(output_folder, pattern = "^normalized_.*_clr\\.csv$", full.names = TRUE)
 
-# include raw.csv (as baseline) if present
-raw_fp <- file.path(output_folder, "raw.csv")
-if (file.exists(raw_fp)) clr_paths <- c(raw_fp, clr_paths)
+# include raw_clr.csv (as baseline) if present
+raw_clr_fp <- file.path(output_folder, "raw_clr.csv")
+if (file.exists(raw_clr_fp)) clr_paths <- c(raw_clr_fp, clr_paths)
 
-if (!length(clr_paths)) stop("No CLR matrices found (expected 'normalized_*_clr.csv').")
+if (!length(clr_paths)) stop("No CLR matrices found (expected 'raw_clr.csv' or 'normalized_*_clr.csv').")
 
-method_names <- ifelse(basename(clr_paths) == "raw.csv",
+method_names <- ifelse(basename(clr_paths) == "raw_clr.csv",
                        "Before correction",
                        gsub("^normalized_|_clr\\.csv$", "", basename(clr_paths)))
 file_list <- setNames(clr_paths, method_names)
+
+# lock plotting order to the discovered order
+method_levels <- names(file_list)
 
 # --------- Helpers ---------
 safe_numeric_matrix <- function(df) {
@@ -65,7 +69,7 @@ compute_alignment_score <- function(X, batch, k = 10, var_prop = 0.95, max_pcs =
   mean(si, na.rm = TRUE)
 }
 
-# NEW: simple ranking function (higher AS = better)
+# Simple ranking (for CSV only; plotting keeps original order)
 rank_alignment_methods <- function(as_table) {
   as_table %>%
     filter(is.finite(AS)) %>%
@@ -89,6 +93,7 @@ for (nm in names(file_list)) {
   df <- df |> mutate(sample_id = as.character(sample_id))
   merged <- inner_join(df, metadata, by = "sample_id")
   if (!nrow(merged)) { warning(sprintf("Skipping %s: no overlap with metadata.", nm)); next }
+  # only use original data columns (exclude metadata)
   X <- safe_numeric_matrix(merged[, setdiff(names(df), "sample_id"), drop = FALSE])
   b <- merged$batchid
   ascore <- tryCatch(
@@ -98,24 +103,70 @@ for (nm in names(file_list)) {
   as_tbl <- bind_rows(as_tbl, tibble(Method = nm, AS = ascore))
 }
 
-# --------- Rank, save, and print ---------
-as_ranked <- rank_alignment_methods(as_tbl)
-readr::write_csv(as_ranked, file.path(output_folder, "alignment_score_ranking.csv"))
-print(as_ranked)
+# --------- Rank (if applicable) + Save + Plot in original order ---------
+only_baseline <- length(method_levels) == 1L && identical(method_levels, "Before correction")
 
-# --------- Plot ---------
-p_as <- ggplot(as_ranked, aes(x = reorder(Method, AS), y = AS, fill = Method)) +
-  geom_col(width = 0.72, color = "white", linewidth = 0.4, show.legend = FALSE) +
-  geom_text(aes(label = sprintf("%.3f", AS)), vjust = -0.4, size = 3.2) +
-  scale_y_continuous(limits = c(0, 1.05), expand = expansion(mult = c(0, 0.02))) +
-  labs(title = "Alignment Score",
-       x = "Method", y = "AS (0–1, higher = better mixing)") +
-  theme_bw() +
-  theme(
-    axis.text.x = element_text(angle = 45, hjust = 1),
-    panel.grid.major.x = element_blank(),
-    panel.grid.minor   = element_blank()
-  )
-
-ggsave(file.path(output_folder, "alignment_score.png"), p_as, width = 8.5, height = 5.2, dpi = 300)
-ggsave(file.path(output_folder, "alignment_score.tif"), p_as, width = 8.5, height = 5.2, dpi = 300, compression = "lzw")
+if (only_baseline) {
+  # ---- Baseline-only assessment (no ranking) ----
+  base_row <- as_tbl %>% filter(Method == "Before correction")
+  if (nrow(base_row) == 0) {
+    stop("No Alignment Score computed for 'Before correction'.")
+  }
+  base_row <- base_row %>%
+    mutate(Needs_Correction = AS < AS_THRESHOLD)
+  
+  # save + print assessment
+  readr::write_csv(base_row, file.path(output_folder, "alignment_score_raw_assessment.csv"))
+  print(base_row)
+  
+  # single-bar plot in original order
+  plot_df <- base_row %>% mutate(Method = factor(Method, levels = method_levels))
+  
+  p_as <- ggplot(plot_df, aes(x = Method, y = AS, fill = Method)) +
+    geom_col(width = 0.72, color = "white", linewidth = 0.4, show.legend = FALSE) +
+    geom_text(aes(label = sprintf("%.3f", AS)), vjust = -0.4, size = 3.2) +
+    scale_y_continuous(limits = c(0, 1.05), expand = expansion(mult = c(0, 0.02))) +
+    labs(title = "Alignment Score (baseline)",
+         x = "Method", y = "AS (0–1, higher = better mixing)") +
+    theme_bw() +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      panel.grid.major.x = element_blank(),
+      panel.grid.minor   = element_blank()
+    )
+  
+  ggsave(file.path(output_folder, "alignment_score.png"), p_as, width = 6.5, height = 4.6, dpi = 300)
+  ggsave(file.path(output_folder, "alignment_score.tif"), p_as, width = 6.5, height = 4.6, dpi = 300, compression = "lzw")
+  
+  if (isTRUE(base_row$Needs_Correction[1])) {
+    message(sprintf("Baseline AS = %.3f < %.2f — correction recommended.", base_row$AS[1], AS_THRESHOLD))
+  } else {
+    message(sprintf("Baseline AS = %.3f ≥ %.2f — correction may not be necessary.", base_row$AS[1], AS_THRESHOLD))
+  }
+  
+} else {
+  # ---- Multiple methods: keep bar order as in file_list; still produce ranking CSV ----
+  as_ranked <- rank_alignment_methods(as_tbl)
+  readr::write_csv(as_ranked, file.path(output_folder, "alignment_score_ranking.csv"))
+  print(as_ranked)
+  
+  # Plot bars in original method order (DO NOT reorder by AS)
+  plot_df <- as_tbl %>%
+    mutate(Method = factor(Method, levels = method_levels))
+  
+  p_as <- ggplot(plot_df, aes(x = Method, y = AS, fill = Method)) +
+    geom_col(width = 0.72, color = "white", linewidth = 0.4, show.legend = FALSE) +
+    geom_text(aes(label = sprintf("%.3f", AS)), vjust = -0.4, size = 3.2) +
+    scale_y_continuous(limits = c(0, 1.05), expand = expansion(mult = c(0, 0.02))) +
+    labs(title = "Alignment Score",
+         x = "Method", y = "AS (0–1, higher = better mixing)") +
+    theme_bw() +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      panel.grid.major.x = element_blank(),
+      panel.grid.minor   = element_blank()
+    )
+  
+  ggsave(file.path(output_folder, "alignment_score.png"), p_as, width = 8.5, height = 5.2, dpi = 300)
+  ggsave(file.path(output_folder, "alignment_score.tif"), p_as, width = 8.5, height = 5.2, dpi = 300, compression = "lzw")
+}

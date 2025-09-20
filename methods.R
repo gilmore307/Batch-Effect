@@ -1,9 +1,12 @@
 # ---------------------------
 # Handle Arguments
 # ---------------------------
-# args <- commandArgs(trailingOnly = TRUE)
-#args <- c("FSQN,QN,BMC,limma,ConQuR,PLSDA,ComBat,MMUPHin,RUV,MetaDICT,SVD,PN,FAbatch,ComBatSeq", "output/example")
-args <- c("DEBIAS", "output/example")
+#All Methods: FSQN,QN,BMC,limma,ConQuR,PLSDA,ComBat,MMUPHin,RUV,MetaDICT,SVD,PN,FAbatch,ComBatSeq
+
+args <- commandArgs(trailingOnly = TRUE)
+if (length(args) < 1) {
+  args <- c("FSQN", "output/example")
+}
 
 method_list   <- unlist(strsplit(args[1], ","))
 output_folder <- args[2]
@@ -400,6 +403,7 @@ run_method("Input checks", {
   say("Reference batch level: ", as.character(reference_batch),
       " | #ref samples: ", length(ref_idx))
   if (length(ref_idx) < 1) warn_step("Reference", "No samples in reference batch level.")
+  write_tss_clr("RAW", base_M, base_form, "raw.csv")
 })
 
 # ---------------------------
