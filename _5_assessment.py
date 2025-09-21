@@ -44,7 +44,11 @@ def assessment_layout(active_path: str, stage: str):
         ("ebm", "Entropy score", "Entropy_Score.R"),
         ("silhouette", "Silhouette score", "Silhouette.R"),
     ]
-    groups = pre_groups + (post_extra if stage == "post" else [])
+    # For post assessment, exclude the Mosaic test
+    if stage == "post":
+        groups = [g for g in pre_groups if g[0] != "mosaic"] + post_extra
+    else:
+        groups = pre_groups
 
     # Build preset tabs with a Run button per group and placeholder until run
     tab_items = []
@@ -60,7 +64,7 @@ def assessment_layout(active_path: str, stage: str):
                     dbc.Button("Run", id=run_id, size="sm", color="primary", className="mb-2"),
                     dcc.Loading(html.Div(id=content_id, children=placeholder), type="default"),
                 ]),
-        )
+            )
         )
 
     # Overall tab at the end (auto-updates after any run)
@@ -160,6 +164,7 @@ def register_pre_post_callbacks(app):
     # Register all group callbacks
     for key, _, script in pre_groups:
         _register_group("pre", key, script)
-    for key, _, script in pre_groups + post_extra:
+    # For post assessment, exclude Mosaic from registration
+    for key, _, script in [g for g in pre_groups if g[0] != "mosaic"] + post_extra:
         _register_group("post", key, script)
 

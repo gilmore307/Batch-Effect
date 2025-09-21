@@ -678,7 +678,15 @@ def aggregate_rankings(session_dir: Path) -> Tuple[List[str], List[Dict[str, str
         }
         for metric in unique_metrics:
             value = metric_ranks.get(metric, {}).get(method)
-            row[metric] = f"{value:.2f}" if value is not None else "-"
+            if value is None:
+                row[metric] = "-"
+            else:
+                # Show integer ranks (no values) in overall table
+                try:
+                    ival = int(round(value))
+                    row[metric] = str(ival)
+                except Exception:
+                    row[metric] = str(value)
         rows.append(row)
     rows.sort(key=lambda item: float(item["Average rank"]))
     return unique_metrics, rows
@@ -770,6 +778,75 @@ def build_assessment_overview_table(session_dir: Path, stage: str):
 
 
 def build_overall_div(session_dir: Path, stage: str):
+    if stage == "post":
+        # Build an interactive ranking table using all *_ranking.csv files
+        metrics, rows = aggregate_rankings(session_dir)
+        if not metrics:
+            body = html.Div("No ranking files found. Run post-assessment tabs to generate *_ranking.csv files.")
+        else:
+            # Convert to typed values for proper sorting
+            typed_rows: List[Dict[str, object]] = []
+            for idx, r in enumerate(rows, start=1):
+                tr: Dict[str, object] = {"Method": r.get("Method", "")}
+                # Add Rank column (1-based by Average rank order)
+                try:
+                    avg = float(r.get("Average rank", "nan"))
+                except Exception:
+                    avg = float("nan")
+                tr["Rank"] = idx
+                tr["Average rank"] = avg
+                # Metrics count
+                try:
+                    tr["Metrics"] = int(r.get("Metrics", 0))
+                except Exception:
+                    tr["Metrics"] = r.get("Metrics", 0)
+                for m in metrics:
+                    val = r.get(m, "-")
+                    if val == "-" or val is None:
+                        tr[m] = None
+                    else:
+                        try:
+                            tr[m] = int(val)
+                        except Exception:
+                            try:
+                                tr[m] = float(val)
+                            except Exception:
+                                tr[m] = val
+                typed_rows.append(tr)
+
+            columns = (
+                [{"name": "Rank", "id": "Rank", "type": "numeric"},
+                 {"name": "Method", "id": "Method"},
+                 {"name": "Average rank", "id": "Average rank", "type": "numeric"},
+                 {"name": "Metrics", "id": "Metrics", "type": "numeric"}]
+                + [{"name": m, "id": m, "type": "numeric"} for m in metrics]
+            )
+
+            body = dash_table.DataTable(
+                data=typed_rows,
+                columns=columns,
+                sort_action="native",
+                sort_by=[{"column_id": "Rank", "direction": "asc"}],
+                filter_action="native",
+                page_size=25,
+                style_table={"overflowX": "auto"},
+                style_cell={
+                    "padding": "6px",
+                    "textAlign": "left",
+                    "minWidth": "80px",
+                    "width": "120px",
+                    "maxWidth": "260px",
+                    "whiteSpace": "normal",
+                },
+                style_header={"fontWeight": "600"},
+                fill_width=True,
+            )
+
+        return html.Div([
+            html.H6("Overall Ranking"),
+            body,
+        ])
+    # Pre: show overall summary of raw assessment values
     return html.Div([
         html.H6("Overall Summary"),
         build_assessment_overview_table(session_dir, stage),

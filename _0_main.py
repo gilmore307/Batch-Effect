@@ -207,6 +207,8 @@ def open_restart_modal(n_clicks: int, pathname: str) -> bool:
     Output("session-id", "data"),
     Output("selected-methods", "data", allow_duplicate=True),
     Output("upload-complete", "data", allow_duplicate=True),
+    Output("preprocess-complete", "data", allow_duplicate=True),
+    Output("pre-started", "data", allow_duplicate=True),
     Output("pre-complete", "data", allow_duplicate=True),
     Output("correction-complete", "data", allow_duplicate=True),
     Output("post-complete", "data", allow_duplicate=True),
@@ -237,6 +239,8 @@ def handle_restart(confirm_yes: int, confirm_no: int, current_session: str):
             new_session,  # session-id
             [],           # selected-methods
             False,        # upload-complete
+            False,        # preprocess-complete
+            False,        # pre-started
             False,        # pre-complete
             False,        # correction-complete
             False,        # post-complete
@@ -249,6 +253,8 @@ def handle_restart(confirm_yes: int, confirm_no: int, current_session: str):
             dash.no_update,
             dash.no_update,
             dash.no_update,
+            dash.no_update,  # preprocess-complete
+            dash.no_update,  # pre-started
             dash.no_update,
             dash.no_update,
             dash.no_update,
