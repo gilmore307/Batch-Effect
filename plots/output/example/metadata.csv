@@ -1,4 +1,4 @@
-sample_id,batchid,days,phenotype
+sample_id,batch_id,days,phenotype
 E1aJ16,A,16,0
 E5aJ16,A,16,0
 E6aJ16,A,16,0

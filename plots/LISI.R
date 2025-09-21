@@ -307,16 +307,6 @@ plot_df <- summary_df %>%
 
 p_scatter <- ggplot(plot_df, aes(x = x, y = y, color = Method)) +
   geom_point(size = 3) +
-  {
-    if (has_repel) {
-      ggrepel::geom_text_repel(aes(label = ylab),
-                               size = 3, seed = 1,
-                               box.padding = 0.2, point.padding = 0.2,
-                               show.legend = FALSE, max.overlaps = Inf)
-    } else {
-      geom_text(aes(label = ylab), nudge_y = 0.03, size = 3, show.legend = FALSE)
-    }
-  } +
   scale_x_continuous(limits = c(0, 1), labels = number_format(accuracy = 0.01)) +
   scale_y_continuous(limits = c(0, 1), labels = number_format(accuracy = 0.01)) +
   labs(

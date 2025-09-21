@@ -8,18 +8,17 @@ suppressPackageStartupMessages({
   library(tidyr)
   library(patchwork)
   library(vegan)  # Bray-Curtis
-
-# Map method codes to short labels for figures
-method_short_label <- function(x) {
-  map <- c(
-    qn = "QN", bmc = "BMC", limma = "Limma", conqur = "ConQuR",
-    plsda = "PLSDA-batch", combat = "ComBat", fsqn = "FSQN", mmuphin = "MMUPHin",
-    ruv = "RUV-III-NB", metadict = "MetaDICT", svd = "SVD", pn = "PN",
-    fabatch = "FAbatch", combatseq = "ComBat-seq", debias = "DEBIAS-M"
-  )
-  sapply(x, function(v){ lv <- tolower(v); if (lv %in% names(map)) map[[lv]] else v })
-}
-
+  
+  # Map method codes to short labels for figures
+  method_short_label <- function(x) {
+    map <- c(
+      qn = "QN", bmc = "BMC", limma = "Limma", conqur = "ConQuR",
+      plsda = "PLSDA-batch", combat = "ComBat", fsqn = "FSQN", mmuphin = "MMUPHin",
+      ruv = "RUV-III-NB", metadict = "MetaDICT", svd = "SVD", pn = "PN",
+      fabatch = "FAbatch", combatseq = "ComBat-seq", debias = "DEBIAS-M"
+    )
+    sapply(x, function(v){ lv <- tolower(v); if (lv %in% names(map)) map[[lv]] else v })
+  }
 })
 
 # ==== IO ====
@@ -66,6 +65,25 @@ sort_levels_numeric <- function(x) {
   x <- as.character(x)
   xn <- suppressWarnings(as.numeric(x))
   if (all(!is.na(xn))) as.character(sort(xn)) else sort(x, method = "radix")
+}
+
+# Ensure a 1:1 alignment between data frame rows and metadata by
+# pairing duplicate sample_ids in their order of appearance.
+align_samples_1to1 <- function(df, metadata) {
+  if (!"sample_id" %in% names(df)) {
+    if (nrow(df) == nrow(metadata)) df$sample_id <- metadata$sample_id
+    else stop("Input lacks 'sample_id' and row count != metadata; can't align samples.")
+  }
+  df <- df %>% mutate(sample_id = as.character(sample_id))
+  md <- metadata %>% mutate(sample_id = as.character(sample_id))
+
+  df <- df %>% group_by(sample_id) %>% mutate(.dup_idx = dplyr::row_number()) %>% ungroup()
+  md <- md %>% group_by(sample_id) %>% mutate(.dup_idx = dplyr::row_number()) %>% ungroup()
+
+  # Join by sample_id + within-id duplicate index to avoid many-to-many expansion
+  out <- suppressWarnings(dplyr::inner_join(df, md, by = c("sample_id", ".dup_idx")))
+  out <- dplyr::select(out, -".dup_idx")
+  out
 }
 
 safe_closure <- function(X) {
@@ -138,12 +156,7 @@ batch_distance_matrix <- function(D_sample, batch_factor, diag_mode = c("zero","
 }
 
 rmse_batch_matrix_aitchison <- function(df, metadata, batch_var = "batch_id", diag_mode = "zero") {
-  if (!"sample_id" %in% names(df)) {
-    if (nrow(df) == nrow(metadata)) df$sample_id <- metadata$sample_id
-    else stop("Input lacks 'sample_id' and row count != metadata; can't align samples.")
-  }
-  df  <- df %>% mutate(sample_id = as.character(sample_id))
-  dfm <- inner_join(df, metadata, by = "sample_id")
+  dfm <- align_samples_1to1(df, metadata)
   feat_cols <- setdiff(names(df), "sample_id")
   X <- dfm %>% select(all_of(feat_cols)) %>% select(where(is.numeric)) %>% as.matrix()
   keep <- apply(X, 2, function(col) all(is.finite(col)) && sd(col, na.rm = TRUE) > 0)
@@ -159,12 +172,7 @@ rmse_batch_matrix_aitchison <- function(df, metadata, batch_var = "batch_id", di
 }
 
 dissim_batch_matrix_bray <- function(df, metadata, batch_var = "batch_id", diag_mode = "zero") {
-  if (!"sample_id" %in% names(df)) {
-    if (nrow(df) == nrow(metadata)) df$sample_id <- metadata$sample_id
-    else stop("Input lacks 'sample_id' and row count != metadata; can't align samples.")
-  }
-  df  <- df %>% mutate(sample_id = as.character(sample_id))
-  dfm <- inner_join(df, metadata, by = "sample_id")
+  dfm <- align_samples_1to1(df, metadata)
   feat_cols <- setdiff(names(df), "sample_id")
   X <- dfm %>% select(all_of(feat_cols)) %>% select(where(is.numeric)) %>% as.matrix()
   X <- safe_closure(X)
@@ -207,6 +215,9 @@ upper_heatmap_panel <- function(Db, ord, title_label, fill_label,
       limits = c(global_min, global_max),
       oob = scales::squish
     ) +
+    # Keep full set of batch levels on both axes
+    scale_x_discrete(limits = ord, drop = FALSE) +
+    scale_y_discrete(limits = ord, drop = FALSE) +
     coord_fixed() +
     labs(title = title_label, x = NULL, y = NULL) +
     theme_bw() +

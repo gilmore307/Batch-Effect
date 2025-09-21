@@ -217,7 +217,7 @@ if (!dir.exists(output_folder)) dir.create(output_folder, recursive = TRUE)
 
 metadata <- readr::read_csv(file.path(output_folder, "metadata.csv"), show_col_types = FALSE) %>%
   dplyr::mutate(sample_id = as.character(sample_id))
-}
+
 if (!("batch_id" %in% names(metadata)) && ("batch_id" %in% names(metadata))) {
   metadata$batch_id <- metadata$batch_id
 }

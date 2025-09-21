@@ -1,4 +1,4 @@
-﻿# ===================== Silhouette (CLR-only, UMAP-based) =====================
+# ===================== Silhouette (CLR-only, UMAP-based) =====================
 suppressPackageStartupMessages({
   library(readr)
   library(dplyr)
@@ -164,10 +164,10 @@ if (only_baseline) {
     geom_text(aes(label = sprintf("%.3f", Silhouette)), vjust = -0.4, size = 3.2) +
     scale_y_continuous(limits = c(0, 1.05), expand = expansion(mult = c(0, 0.02))) +
     labs(
-      title = "Silhouette Score (UMAP) 鈥?baseline",
-      subtitle = sprintf("Labels=%s 鈥?UMAP(metric=%s, n_neighbors=%d, min_dist=%.2f)",
+      title = "Silhouette Score (UMAP) - baseline",
+      subtitle = sprintf("Labels=%s - UMAP(metric=%s, n_neighbors=%d, min_dist=%.2f)",
                          LABEL_COL_NAME, pretty_metric(UMAP_METRIC), UMAP_NEIGHB, UMAP_MIN_DIST),
-      x = "Method", y = "Silhouette (0鈥?, higher = tighter class separation)"
+      x = "Method", y = "Silhouette (0-1, higher = tighter class separation)"
     ) +
     theme_bw() +
     theme(
@@ -180,13 +180,13 @@ if (only_baseline) {
   ggsave(file.path(output_folder, "silhouette.tif"), p_sil, width = 6.5, height = 4.6, dpi = 300, compression = "lzw")
   
   if (isTRUE(base_row$Needs_Correction[1])) {
-    message(sprintf("Baseline silhouette = %.3f < %.2f 鈥?correction recommended.", base_row$Silhouette[1], SIL_THRESHOLD))
+    message(sprintf("Baseline silhouette = %.3f < %.2f - correction recommended.", base_row$Silhouette[1], SIL_THRESHOLD))
   } else {
-    message(sprintf("Baseline silhouette = %.3f 鈮?%.2f 鈥?correction may not be necessary.", base_row$Silhouette[1], SIL_THRESHOLD))
+    message(sprintf("Baseline silhouette = %.3f ≥ %.2f - correction may not be necessary.", base_row$Silhouette[1], SIL_THRESHOLD))
   }
   
 } else {
-  # Multiple methods 鈥?write a ranking CSV but KEEP ORIGINAL ORDER IN THE PLOT
+  # Multiple methods - write a ranking CSV but KEEP ORIGINAL ORDER IN THE PLOT
   sil_ranked <- sil_tbl %>%
     filter(is.finite(Silhouette)) %>%
     arrange(desc(Silhouette), Method) %>%
@@ -202,9 +202,9 @@ if (only_baseline) {
     scale_y_continuous(limits = c(0, 1.05), expand = expansion(mult = c(0, 0.02))) +
     labs(
       title = "Silhouette Score (UMAP)",
-      subtitle = sprintf("Labels=%s 鈥?UMAP(metric=%s, n_neighbors=%d)",
+      subtitle = sprintf("Labels=%s - UMAP(metric=%s, n_neighbors=%d)",
                          LABEL_COL_NAME, pretty_metric(UMAP_METRIC), UMAP_NEIGHB),
-      x = "Method", y = "Silhouette (0鈥?, higher = tighter class separation)"
+      x = "Method", y = "Silhouette (0- , higher = tighter class separation)"
     ) +
     theme_bw() +
     theme(
