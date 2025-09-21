@@ -1,4 +1,4 @@
-# ===============================
+﻿# ===============================
 # File: _5_assessment.py
 # ===============================
 from dash import html, dcc
@@ -15,58 +15,77 @@ from _2_utils import (
     PRE_FIGURES,
     POST_FIGURES,
     render_assessment_tabs,
+    render_group_tabset,
+    build_ranking_tab,
+    build_raw_assessments_tab,
+    build_overall_div,
 )
 
 
 def assessment_layout(active_path: str, stage: str):
-    figure_specs = PRE_FIGURES if stage == "pre" else POST_FIGURES
-    header = "Pre-correction assessment" if stage == "pre" else "Post-correction assessment"
-    button_id = "run-pre-assessment" if stage == "pre" else "run-post-assessment"
-    status_id = "pre-assessment-log" if stage == "pre" else "post-assessment-log"
+    header = "Pre-correction Assessment" if stage == "pre" else "Post-correction Assessment"
     gallery_id = "pre-assessment-gallery" if stage == "pre" else "post-assessment-gallery"
+
+    # Define groups (key, title, script)
+    pre_groups = [
+        ("mosaic", "Mosaic plot", "Mosaic.R"),
+        ("pca", "PCA", "pca.R"),
+        ("pcoa", "PCoA", "pcoa.R"),
+        ("nmds", "NMDS", "NMDS.R"),
+        ("dissimilarity", "Dissimilarity heatmaps", "Dissimilarity_Heatmaps.R"),
+        ("r2", "R^2", "R2.R"),
+        ("prda", "pRDA", "pRDA.R"),
+        ("pvca", "PVCA", "pvca.R"),
+        ("alignment", "Alignment score", "Alignment_Score.R"),
+        ("auc", "AUC", "AUC.R"),
+    ]
+    post_extra = [
+        ("lisi", "LISI", "LISI.R"),
+        ("ebm", "Entropy score", "Entropy_Score.R"),
+        ("silhouette", "Silhouette score", "Silhouette.R"),
+    ]
+    groups = pre_groups + (post_extra if stage == "post" else [])
+
+    # Build preset tabs with a Run button per group and placeholder until run
+    tab_items = []
+    for key, title, _ in groups:
+        run_id = f"run-{stage}-{key}"
+        content_id = f"{stage}-{key}-content"
+        placeholder = html.Div("Click Run to generate results.")
+        tab_items.append(
+            dcc.Tab(
+                label=title,
+                value=f"tab-{key}",
+                children=html.Div([
+                    dbc.Button("Run", id=run_id, size="sm", color="primary", className="mb-2"),
+                    dcc.Loading(html.Div(id=content_id, children=placeholder), type="default"),
+                ]),
+        )
+        )
+
+    # Overall tab at the end (auto-updates after any run)
+    tab_items.append(
+        dcc.Tab(
+            label="Overall",
+            value="tab-overall",
+            children=html.Div(id=f"{stage}-overall-content", children=html.Div("No results yet.")),
+        )
+    )
+
+    tabs = dcc.Tabs(children=tab_items, value=(tab_items[0].value if tab_items else None), vertical=True, className="be-results-tabs")
 
     return html.Div(
         [
             build_navbar(active_path),
             dbc.Container(
-                dbc.Row(
-                    [
-                        dbc.Col(
-                            [
-                                html.H2(header),
-                                dbc.Button(
-                                    "Run assessment",
-                                    id=button_id,
-                                    color="primary",
-                                    className="mb-3",
-                                    disabled=True,
-                                ),
-                                html.Div(
-                                    "Run to populate the tabs on the right.",
-                                    className="text-muted",
-                                ),
-                                html.Div(style={"height": "70vh"}),
-                            ],
-                            xs=12,
-                            md=8,
-                            lg=8,
-                        ),
-                        dbc.Col(
-                            [
-                                html.H6("Assessment Results", className="mb-2"),
-                                html.Div(
-                                    id=gallery_id,
-                                    children=html.Div("Results will appear here once generated."),
-                                    style={"position": "sticky", "top": "1rem", "maxHeight": "80vh", "overflowY": "auto"},
-                                ),
-                            ],
-                            xs=12,
-                            md=4,
-                            lg=4,
-                        ),
-                    ],
-                    align="start",
-                ),
+                [
+                    html.H2(header),
+                    html.Div(
+                        "Click Run inside a tab to compute only that assessment.",
+                        className="text-muted mb-3",
+                    ),
+                    tabs,
+                ],
                 fluid=True,
             ),
         ]
@@ -74,40 +93,73 @@ def assessment_layout(active_path: str, stage: str):
 
 
 def register_pre_post_callbacks(app):
-    @app.callback(
-        Output("pre-assessment-gallery", "children"),
-        Output("pre-complete", "data"),
-        Input("run-pre-assessment", "n_clicks"),
-        State("session-id", "data"),
-        prevent_initial_call=True,
-    )
-    def perform_pre_assessment(n_clicks: int, session_id: str):
-        if not n_clicks:
-            raise dash.exceptions.PreventUpdate
-        session_dir = get_session_dir(session_id)
-        if not (session_dir / "raw.csv").exists() or not (session_dir / "metadata.csv").exists():
-            message = html.Div("Upload both raw.csv and metadata.csv before running the assessment.")
-            return message, False
+    # Group definitions for per-tab runs
+    pre_groups = [
+        ("mosaic", "Mosaic plot", "Mosaic.R"),
+        ("pca", "PCA", "pca.R"),
+        ("pcoa", "PCoA", "pcoa.R"),
+        ("nmds", "NMDS", "NMDS.R"),
+        ("dissimilarity", "Dissimilarity heatmaps", "Dissimilarity_Heatmaps.R"),
+        ("r2", "R^2", "R2.R"),
+        ("prda", "pRDA", "pRDA.R"),
+        ("pvca", "PVCA", "pvca.R"),
+        ("alignment", "Alignment score", "Alignment_Score.R"),
+        ("auc", "AUC", "AUC.R"),
+    ]
+    post_extra = [
+        ("lisi", "LISI", "LISI.R"),
+        ("ebm", "Entropy score", "Entropy_Score.R"),
+        ("silhouette", "Silhouette score", "Silhouette.R"),
+    ]
 
-        success, scripts_log = run_r_scripts(PRE_SCRIPTS, session_dir)
-        tabs = render_assessment_tabs(session_dir, PRE_FIGURES)
-        return tabs, bool(success)
+    def _register_group(stage: str, key: str, script_name: str):
+        run_id = f"run-{stage}-{key}"
+        content_id = f"{stage}-{key}-content"
 
-    @app.callback(
-        Output("post-assessment-gallery", "children"),
-        Output("post-complete", "data"),
-        Input("run-post-assessment", "n_clicks"),
-        State("session-id", "data"),
-        prevent_initial_call=True,
-    )
-    def perform_post_assessment(n_clicks: int, session_id: str):
-        if not n_clicks:
-            raise dash.exceptions.PreventUpdate
-        session_dir = get_session_dir(session_id)
-        if not (session_dir / "raw.csv").exists() or not (session_dir / "metadata.csv").exists():
-            message = html.Div("Upload both raw.csv and metadata.csv before running the assessment.")
-            return message, False
+        outputs = [Output(content_id, "children")]
+        if stage == "pre":
+            outputs.append(Output("pre-started", "data", allow_duplicate=True))
+        if stage == "post":
+            outputs.append(Output("post-complete", "data", allow_duplicate=True))
+        outputs.extend([
+            Output("runlog-path", "data", allow_duplicate=True),
+            Output("runlog-modal", "is_open", allow_duplicate=True),
+            Output("runlog-interval", "disabled", allow_duplicate=True),
+            Output(f"{stage}-overall-content", "children", allow_duplicate=True),
+        ])
 
-        success, scripts_log = run_r_scripts(POST_SCRIPTS, session_dir)
-        tabs = render_assessment_tabs(session_dir, POST_FIGURES)
-        return tabs, bool(success)
+        @app.callback(*outputs, Input(run_id, "n_clicks"), State("session-id", "data"), prevent_initial_call=True)
+        def _run_one(n_clicks: int, session_id: str, _stage=stage, _key=key, _script=script_name):
+            if not n_clicks:
+                raise dash.exceptions.PreventUpdate
+            if not session_id:
+                if _stage == "pre":
+                    return html.Div("Session not initialised."), True, dash.no_update, dash.no_update, dash.no_update, dash.no_update
+                else:
+                    return html.Div("Session not initialised."), True, dash.no_update, dash.no_update, dash.no_update, dash.no_update
+            session_dir = get_session_dir(session_id)
+            if not (session_dir / "raw.csv").exists() or not (session_dir / "metadata.csv").exists():
+                if _stage == "pre":
+                    return html.Div("Upload both raw.csv and metadata.csv first."), True, dash.no_update, dash.no_update, dash.no_update, dash.no_update
+                else:
+                    return html.Div("Upload both raw.csv and metadata.csv first."), True, dash.no_update, dash.no_update, dash.no_update, dash.no_update
+
+            log_path = session_dir / f"{_stage}_{_key}.log"
+            try:
+                log_path.write_text("", encoding="utf-8")
+            except Exception:
+                pass
+            success, _ = run_r_scripts((_script,), session_dir, log_path=log_path)
+            content = render_group_tabset(session_dir, _stage, _key)
+            overall = build_overall_div(session_dir, _stage)
+            if _stage == "pre":
+                return content, True, str(log_path), True, False, overall
+            else:
+                return content, True, str(log_path), True, False, overall
+
+    # Register all group callbacks
+    for key, _, script in pre_groups:
+        _register_group("pre", key, script)
+    for key, _, script in pre_groups + post_extra:
+        _register_group("post", key, script)
+

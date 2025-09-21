@@ -25,7 +25,7 @@ def upload_layout(active_path: str):
                     [
                         dbc.Col(
                             [
-                                html.H2("Upload data"),
+                                html.H2("Upload Files"),
                                 html.P("Provide the raw count matrix and the matching metadata table."),
                                 dbc.Row(
                                     [
@@ -176,12 +176,12 @@ def register_upload_callbacks(app):
             dbc.CardBody([
                 dbc.Row([
                     dbc.Col([
-                        dbc.Label("Sample ID column"),
-                        dcc.Dropdown(id="map-sample-id", options=opts, placeholder="Select sample_id column"),
-                    ], md=4),
-                    dbc.Col([
                         dbc.Label("Batch ID column"),
                         dcc.Dropdown(id="map-batch-id", options=opts, placeholder="Select batch_id column"),
+                    ], md=4),
+                    dbc.Col([
+                        dbc.Label("Sample ID column"),
+                        dcc.Dropdown(id="map-sample-id", options=opts, placeholder="Select sample_id column"),
                     ], md=4),
                     dbc.Col([
                         dbc.Label("Phenotype column"),
@@ -200,6 +200,10 @@ def register_upload_callbacks(app):
 
     @app.callback(
         Output("process-result", "children"),
+        Output("preprocess-complete", "data", allow_duplicate=True),
+        Output("runlog-path", "data", allow_duplicate=True),
+        Output("runlog-modal", "is_open", allow_duplicate=True),
+        Output("runlog-interval", "disabled", allow_duplicate=True),
         Input("apply-mapping", "n_clicks"),
         State("map-sample-id", "value"),
         State("map-batch-id", "value"),
@@ -211,14 +215,14 @@ def register_upload_callbacks(app):
         if not n_clicks:
             raise dash.exceptions.PreventUpdate
         if not session_id:
-            return "Session not initialised."
+            return dash.no_update, False, dash.no_update, dash.no_update, dash.no_update
         if not sample_col or not batch_col or not pheno_col:
-            return "Please select all three columns before applying."
+            return dash.no_update, False, dash.no_update, dash.no_update, dash.no_update
 
         session_dir = get_session_dir(session_id)
         meta_path = session_dir / "metadata.csv"
         if not meta_path.exists():
-            return "metadata.csv not found in session."
+            return dash.no_update, False, dash.no_update, dash.no_update, dash.no_update
 
         # Rename columns by rewriting CSV
         try:
@@ -248,12 +252,14 @@ def register_upload_callbacks(app):
                         out_row[new] = row.get(old)
                     writer.writerow(out_row)
         except Exception as exc:
-            return f"Failed to rename metadata columns: {exc}"
+            return dash.no_update, False, dash.no_update, dash.no_update, dash.no_update
 
         # Run preprocess.R in the session directory
-        ok, log = run_preprocess(session_dir)
-        prefix = "Preprocess succeeded." if ok else "Preprocess failed."
-        return html.Div([
-            html.Div(prefix),
-            html.Pre(log, style={"whiteSpace": "pre-wrap"}),
-        ])
+        log_path = session_dir / "preprocess.log"
+        try:
+            log_path.write_text("", encoding="utf-8")
+        except Exception:
+            pass
+        ok, log = run_preprocess(session_dir, log_path=log_path)
+        # Do not print logs in page; use logger modal
+        return dash.no_update, bool(ok), str(log_path), True, False

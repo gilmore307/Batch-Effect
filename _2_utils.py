@@ -1,4 +1,4 @@
-# ===============================
+﻿# ===============================
 # File: _2_utils.py
 # ===============================
 import base64
@@ -11,9 +11,9 @@ import time
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Sequence, Tuple
+from typing import Dict, Iterable, List, Sequence, Tuple, Optional
 
-from dash import html, dcc
+from dash import html, dcc, dash_table
 import dash_bootstrap_components as dbc
 
 # Paths & constants
@@ -227,27 +227,66 @@ def run_command(command: Sequence[str], cwd: Path) -> Tuple[bool, str]:
         return False, log
 
 
-def run_r_scripts(script_names: Sequence[str], output_dir: Path) -> Tuple[bool, str]:
+def run_command_streaming(command: Sequence[str], cwd: Path, log_path: Path) -> Tuple[bool, str]:
+    """Run a command streaming stdout to a log file for real-time viewing.
+
+    Returns (success, combined_log_text_at_end).
+    """
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    combined: List[str] = []
+    try:
+        with log_path.open("a", encoding="utf-8", errors="replace") as logf:
+            header = "$ " + " ".join(command) + "\n"
+            logf.write(header)
+            logf.flush()
+            proc = subprocess.Popen(
+                command,
+                cwd=cwd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+            assert proc.stdout is not None
+            for line in proc.stdout:
+                logf.write(line)
+                logf.flush()
+                combined.append(line)
+            rc = proc.wait()
+            success = (rc == 0)
+            return success, header + "".join(combined)
+    except Exception as exc:
+        return False, f"$ {' '.join(command)}\n{exc}"
+
+
+def run_r_scripts(script_names: Sequence[str], output_dir: Path, log_path: Optional[Path] = None) -> Tuple[bool, str]:
     logs: List[str] = []
     for script in script_names:
         script_path = PLOTS_DIR / script
         if not script_path.exists():
             logs.append(f"Warning: Script not found: {script}")
             continue
-        success, log = run_command(("Rscript", str(script_path), str(output_dir)), cwd=BASE_DIR)
+        cmd = ("Rscript", str(script_path), str(output_dir))
+        if log_path is not None:
+            success, log = run_command_streaming(cmd, cwd=BASE_DIR, log_path=log_path)
+        else:
+            success, log = run_command(cmd, cwd=BASE_DIR)
         logs.append(log)
         if not success:
             return False, "\n\n".join(logs)
     return True, "\n\n".join(logs)
 
 
-def run_methods(session_dir: Path, methods: Iterable[str]) -> Tuple[bool, str]:
+def run_methods(session_dir: Path, methods: Iterable[str], log_path: Optional[Path] = None) -> Tuple[bool, str]:
     method_arg = ",".join(methods)
     command = ("Rscript", str(METHODS_SCRIPT), method_arg, str(session_dir))
+    if log_path is not None:
+        return run_command_streaming(command, cwd=BASE_DIR, log_path=log_path)
     return run_command(command, cwd=BASE_DIR)
 
 
-def run_preprocess(session_dir: Path) -> Tuple[bool, str]:
+def run_preprocess(session_dir: Path, log_path: Optional[Path] = None) -> Tuple[bool, str]:
     """Run preprocess.R in the project root for a given session directory.
 
     It writes outputs into the provided session directory and reads the
@@ -257,6 +296,8 @@ def run_preprocess(session_dir: Path) -> Tuple[bool, str]:
         return False, f"Script not found: {PREPROCESS_SCRIPT.name}"
     matrix_path = session_dir / "raw.csv"
     command = ("Rscript", str(PREPROCESS_SCRIPT), str(session_dir), str(matrix_path))
+    if log_path is not None:
+        return run_command_streaming(command, cwd=BASE_DIR, log_path=log_path)
     return run_command(command, cwd=BASE_DIR)
 
 
@@ -355,50 +396,237 @@ def _candidate_csvs_for_image(filename: str) -> List[str]:
     return candidates
 
 
-def render_assessment_tabs(session_dir: Path, figures: Sequence[FigureSpec]):
-    """Render a tab set where each tab shows an image and an optional table.
+def render_assessment_tabs(session_dir: Path, figures: Sequence[FigureSpec], stage: str = "pre", extra_tabs: Sequence = ()):  # extra dcc.Tab items appended
+    """Render a vertical tab set of assessment outputs.
 
-    The table is looked up by taking the PNG filename stem and using a CSV
-    with the same stem (e.g., pca.png -> pca.csv). If not found, only the
-    image is shown.
+    Group metrics by base (e.g., PCoA, NMDS, R2, pRDA, Dissimilarity heatmaps).
+    For groups with multiple geometries (Aitchison/Bray-Curtis), show a single
+    top-level tab with sub-tabs: Aitchison (CLR), Bray-Curtis (TSS), and a third
+    sub-tab that is either Assessment (stage='pre') or Rank (stage='post').
+    Single-geometry plots also include the third sub-tab accordingly.
     """
-    tabs = []
-    first_value = None
-    for idx, spec in enumerate(figures):
-        img_path = session_dir / spec.filename
+
+    def content_for_image(filename: str) -> html.Div:
+        img_path = session_dir / filename
         if not img_path.exists():
-            continue
-        # Image
+            return html.Div("Image not found.")
         encoded = base64.b64encode(img_path.read_bytes()).decode("ascii")
         src = f"data:image/png;base64,{encoded}"
         img = html.Img(src=src, style={"maxWidth": "100%", "height": "auto"})
+        return html.Div([img])
 
-        # Table (optional)
-        table_comp = None
-        # Try to resolve the matching CSV based on naming from R scripts
-        for cand in _candidate_csvs_for_image(spec.filename):
-            found = _find_file_case_insensitive(session_dir, cand)
-            if found and found.exists():
-                header, data = _read_csv_rows(found)
-                if header:
-                    thead = html.Thead(html.Tr([html.Th(h) for h in header]))
-                    tbody = html.Tbody([html.Tr([html.Td(cell) for cell in row]) for row in data])
-                    table_comp = dbc.Table([thead, tbody], bordered=True, hover=True, size="sm", className="mt-2")
-                break
+    tabs = []
+    first_value = None
 
-        content_children = [img]
-        if table_comp is not None:
-            content_children.append(table_comp)
+    # Build groups
+    groups = {}
 
-        tab = dcc.Tab(label=spec.label, value=f"tab-{idx}", children=html.Div(content_children))
-        tabs.append(tab)
+    def add_group_item(key: str, title: str, geom: str, filename: str):
+        g = groups.setdefault(key, {"title": title, "ait": None, "bray": None, "single": None})
+        if geom == "ait":
+            g["ait"] = filename
+        elif geom == "bray":
+            g["bray"] = filename
+        else:
+            g["single"] = filename
+
+    for spec in figures:
+        fn = spec.filename
+        low = fn.lower()
+        if low.startswith("pcoa_aitchison"):
+            add_group_item("pcoa", "PCoA", "ait", fn)
+        elif low.startswith("pcoa_braycurtis"):
+            add_group_item("pcoa", "PCoA", "bray", fn)
+        elif low.startswith("nmds_aitchison"):
+            add_group_item("nmds", "NMDS", "ait", fn)
+        elif low.startswith("nmds_braycurtis"):
+            add_group_item("nmds", "NMDS", "bray", fn)
+        elif low.startswith("dissimilarity_heatmaps_aitchison"):
+            add_group_item("dissimilarity", "Dissimilarity heatmaps", "ait", fn)
+        elif low.startswith("dissimilarity_heatmaps_braycurtis"):
+            add_group_item("dissimilarity", "Dissimilarity heatmaps", "bray", fn)
+        elif low.startswith("r2_aitchison"):
+            add_group_item("r2", "R^2", "ait", fn)
+        elif low.startswith("r2_braycurtis"):
+            add_group_item("r2", "R^2", "bray", fn)
+        elif low.startswith("prda_aitchison"):
+            add_group_item("prda", "pRDA", "ait", fn)
+        elif low.startswith("prda_braycurtis"):
+            add_group_item("prda", "pRDA", "bray", fn)
+        elif low == "pca.png":
+            add_group_item("pca", "PCA", "ait", fn)
+        else:
+            # fallback: one tab per figure (with its own assessment sub-tab if any)
+            key = f"single:{low}"
+            add_group_item(key, spec.label, "single", fn)
+
+    # Build tabs with sub-tabs
+    for idx, (key, g) in enumerate(groups.items()):
+        title = g["title"]
+        sub_tabs = []
+        # choose a representative filename for assessment lookup
+        rep = g["ait"] or g["bray"] or g["single"]
+
+        if g["ait"]:
+            sub_tabs.append(dcc.Tab(label="Aitchison (CLR)", value=f"{key}-ait", children=content_for_image(g["ait"])) )
+        if g["bray"]:
+            sub_tabs.append(dcc.Tab(label="Bray-Curtis (TSS)", value=f"{key}-bray", children=content_for_image(g["bray"])) )
+
+        # Third sub-tab: Assessment (pre) or Rank (post)
+        third_label = "Assessment" if stage == "pre" else "Rank"
+        third_content = None
+        if rep:
+            for cand in _candidate_csvs_for_image(rep):
+                if stage == "pre" and cand.endswith("_raw_assessment.csv"):
+                    found = _find_file_case_insensitive(session_dir, cand)
+                    if found and found.exists():
+                        header, data = _read_csv_rows(found)
+                        if header:
+                            thead = html.Thead(html.Tr([html.Th(h) for h in header]))
+                            tbody = html.Tbody([html.Tr([html.Td(cell) for cell in row]) for row in data])
+                            third_content = dbc.Table([thead, tbody], bordered=True, hover=True, size="sm")
+                        break
+                if stage == "post" and cand.endswith("_ranking.csv"):
+                    found = _find_file_case_insensitive(session_dir, cand)
+                    if found and found.exists():
+                        header, data = _read_csv_rows(found)
+                        if header:
+                            thead = html.Thead(html.Tr([html.Th(h) for h in header]))
+                            tbody = html.Tbody([html.Tr([html.Td(cell) for cell in row]) for row in data])
+                            third_content = dbc.Table([thead, tbody], bordered=True, hover=True, size="sm")
+                        break
+        if third_content is None:
+            third_content = html.Div("No table found.")
+        sub_tabs.append(dcc.Tab(label=third_label, value=f"{key}-third", children=html.Div(third_content)))
+
+        inner_default = sub_tabs[0].value if sub_tabs else None
+        inner = dcc.Tabs(className="be-subtabs", children=sub_tabs, value=inner_default)
+
+        top_value = f"tab-{key}"
+        tabs.append(dcc.Tab(label=title, value=top_value, children=html.Div(inner)))
         if first_value is None:
-            first_value = f"tab-{idx}"
+            first_value = top_value
 
-    if not tabs:
+    if not tabs and not extra_tabs:
         return html.Div("No figures available yet. Run the analysis to generate outputs.")
 
-    return dcc.Tabs(children=tabs, value=first_value)
+    # Append any extra tabs (e.g., raw assessments, ranking)
+    for extra in extra_tabs:
+        if first_value is None:
+            first_value = getattr(extra, 'value', None) or 'extra-0'
+        tabs.append(extra)
+
+    return dcc.Tabs(
+        children=tabs,
+        value=first_value or (extra_tabs[0].value if extra_tabs else None),
+        vertical=True,
+        className="be-results-tabs",
+    )
+
+
+def render_group_tabset(session_dir: Path, stage: str, key: str):
+    """Render only one group's inner tabset (Aitchison/Bray + Assessment/Rank).
+
+    key examples: 'pcoa','nmds','dissimilarity','r2','prda','pca','mosaic',
+                  'pvca','alignment','auc','lisi','ebm','silhouette'
+    """
+    figures = PRE_FIGURES if stage == "pre" else POST_FIGURES
+
+    def content_for_image(filename: str) -> html.Div:
+        img_path = session_dir / filename
+        if not img_path.exists():
+            return html.Div("Image not found.")
+        encoded = base64.b64encode(img_path.read_bytes()).decode("ascii")
+        src = f"data:image/png;base64,{encoded}"
+        img = html.Img(src=src, style={"maxWidth": "100%", "height": "auto"})
+        return html.Div([img])
+
+    # Resolve filenames in this group
+    g: Dict[str, Optional[str]] = {"ait": None, "bray": None, "single": None, "title": key}
+    for spec in figures:
+        low = spec.filename.lower()
+        if key == "pcoa":
+            if low.startswith("pcoa_aitchison"):
+                g["ait"] = spec.filename
+            elif low.startswith("pcoa_braycurtis"):
+                g["bray"] = spec.filename
+            g["title"] = "PCoA"
+        elif key == "nmds":
+            if low.startswith("nmds_aitchison"):
+                g["ait"] = spec.filename
+            elif low.startswith("nmds_braycurtis"):
+                g["bray"] = spec.filename
+            g["title"] = "NMDS"
+        elif key == "dissimilarity":
+            if low.startswith("dissimilarity_heatmaps_aitchison"):
+                g["ait"] = spec.filename
+            elif low.startswith("dissimilarity_heatmaps_braycurtis"):
+                g["bray"] = spec.filename
+            g["title"] = "Dissimilarity heatmaps"
+        elif key == "r2":
+            if low.startswith("r2_aitchison"):
+                g["ait"] = spec.filename
+            elif low.startswith("r2_braycurtis"):
+                g["bray"] = spec.filename
+            g["title"] = "R^2"
+        elif key == "prda":
+            if low.startswith("prda_aitchison"):
+                g["ait"] = spec.filename
+            elif low.startswith("prda_braycurtis"):
+                g["bray"] = spec.filename
+            g["title"] = "pRDA"
+        elif key == "pca" and spec.filename.lower() == "pca.png":
+            g["single"] = spec.filename; g["title"] = "PCA"
+        elif key == "mosaic" and spec.filename.lower() == "mosaic_plot.png":
+            g["single"] = spec.filename; g["title"] = "Mosaic plot"
+        elif key == "pvca" and spec.filename.lower() == "pvca.png":
+            g["single"] = spec.filename; g["title"] = "PVCA"
+        elif key == "alignment" and spec.filename.lower() == "alignment_score.png":
+            g["single"] = spec.filename; g["title"] = "Alignment score"
+        elif key == "auc" and spec.filename.lower() == "auroc.png":
+            g["single"] = spec.filename; g["title"] = "AUC"
+        elif key == "lisi" and spec.filename.lower() == "lisi.png":
+            g["single"] = spec.filename; g["title"] = "LISI"
+        elif key == "ebm" and spec.filename.lower() == "ebm.png":
+            g["single"] = spec.filename; g["title"] = "Entropy score"
+        elif key == "silhouette" and spec.filename.lower() == "silhouette.png":
+            g["single"] = spec.filename; g["title"] = "Silhouette score"
+
+    sub_tabs = []
+    if g["ait"]:
+        sub_tabs.append(dcc.Tab(label="Aitchison (CLR)", value=f"{key}-ait", children=content_for_image(g["ait"])) )
+    if g["bray"]:
+        sub_tabs.append(dcc.Tab(label="Bray-Curtis (TSS)", value=f"{key}-bray", children=content_for_image(g["bray"])) )
+    if g["single"] and not (g["ait"] or g["bray"]):
+        sub_tabs.append(dcc.Tab(label="Plot", value=f"{key}-plot", children=content_for_image(g["single"])) )
+
+    rep = g["ait"] or g["bray"] or g["single"]
+    third_label = "Assessment" if stage == "pre" else "Rank"
+    third_content = None
+    if rep:
+        for cand in _candidate_csvs_for_image(rep):
+            if stage == "pre" and cand.endswith("_raw_assessment.csv"):
+                found = _find_file_case_insensitive(session_dir, cand)
+                if found and found.exists():
+                    header, data = _read_csv_rows(found)
+                    if header:
+                        thead = html.Thead(html.Tr([html.Th(h) for h in header]))
+                        tbody = html.Tbody([html.Tr([html.Td(cell) for cell in row]) for row in data])
+                        third_content = dbc.Table([thead, tbody], bordered=True, hover=True, size="sm")
+                    break
+            if stage == "post" and cand.endswith("_ranking.csv"):
+                found = _find_file_case_insensitive(session_dir, cand)
+                if found and found.exists():
+                    header, data = _read_csv_rows(found)
+                    if header:
+                        thead = html.Thead(html.Tr([html.Th(h) for h in header]))
+                        tbody = html.Tbody([html.Tr([html.Td(cell) for cell in row]) for row in data])
+                        third_content = dbc.Table([thead, tbody], bordered=True, hover=True, size="sm")
+                    break
+    if third_content is not None:
+        sub_tabs.append(dcc.Tab(label=third_label, value=f"{key}-third", children=html.Div(third_content)))
+
+    return dcc.Tabs(children=sub_tabs, value=sub_tabs[0].value if sub_tabs else None, className="be-subtabs", style={"width": "100%", "display": "block"})
 
 
 def aggregate_rankings(session_dir: Path) -> Tuple[List[str], List[Dict[str, str]]]:
@@ -454,3 +682,126 @@ def aggregate_rankings(session_dir: Path) -> Tuple[List[str], List[Dict[str, str
         rows.append(row)
     rows.sort(key=lambda item: float(item["Average rank"]))
     return unique_metrics, rows
+
+
+def build_ranking_tab(session_dir: Path):
+    metrics, rows = aggregate_rankings(session_dir)
+    if not metrics:
+        content = html.Div("No ranking files found. Run the post-correction assessment first.")
+    else:
+        header = ["Method", "Average rank", "Metrics", *metrics]
+        table_header = html.Thead(html.Tr([html.Th(col) for col in header]))
+        table_body = html.Tbody([html.Tr([html.Td(row.get(col, "")) for col in header]) for row in rows])
+        content = dbc.Table([table_header, table_body], bordered=True, hover=True, responsive=True, className="text-nowrap")
+    return dcc.Tab(label="Method Ranking", value="tab-ranking", children=html.Div(content))
+
+
+def build_assessment_overview_table(session_dir: Path, stage: str):
+    # Build a single integrated table: Test | Criteria | Test Result | Comment
+    csv_files = list(session_dir.glob("*.csv"))
+    candidates = [p for p in csv_files if p.name.lower().endswith("_raw_assessment.csv")]
+    rows: List[Dict[str, str]] = []
+
+    def pick_value(header: List[str], data_row: List[str]) -> str:
+        hl = [h.lower() for h in header]
+        pri = ["score", "auc", "silhouette", "entropy", "alignment", "r2", "mean_between"]
+        for key in pri:
+            if key in hl:
+                idx = hl.index(key)
+                return data_row[idx]
+        # fallback to first numeric-looking cell
+        for i, v in enumerate(data_row):
+            try:
+                float(v)
+                return v
+            except Exception:
+                continue
+        return "-"
+
+    for path in sorted(candidates):
+        test_name = path.stem.replace("_raw_assessment", "").replace("_", " ").title()
+        header, data = _read_csv_rows(path)
+        if not header or not data:
+            continue
+        # Prefer the row with Method == 'Before correction'
+        method_idx = None
+        try:
+            method_idx = [h.lower() for h in header].index("method")
+        except ValueError:
+            method_idx = None
+        row = None
+        if method_idx is not None:
+            for r in data:
+                if (r[method_idx] or "").strip().lower() == "before correction":
+                    row = r; break
+        if row is None:
+            row = data[0]
+        # Criteria
+        crit = "-"
+        if "criteria" in [h.lower() for h in header]:
+            crit = row[[h.lower() for h in header].index("criteria")]
+        # Comment from Needs_Correction if available
+        comment = "-"
+        if "needs_correction" in [h.lower() for h in header]:
+            val = row[[h.lower() for h in header].index("needs_correction")]
+            comment = "Need correction" if str(val).strip().upper() in ("TRUE", "1") else "No correction"
+        rows.append({
+            "Test": test_name,
+            "Criteria": crit,
+            "Test Result": pick_value(header, row),
+            "Comment": comment,
+        })
+
+    columns = [
+        {"name": "Test", "id": "Test"},
+        {"name": "Criteria", "id": "Criteria"},
+        {"name": "Test Result", "id": "Test Result"},
+        {"name": "Comment", "id": "Comment"},
+    ]
+    return dash_table.DataTable(
+        data=rows,
+        columns=columns,
+        sort_action="native",
+        filter_action="native",
+        page_size=20,
+        style_table={"overflowX": "auto"},
+        style_cell={"padding": "6px", "textAlign": "left"},
+    )
+
+
+def build_overall_div(session_dir: Path, stage: str):
+    return html.Div([
+        html.H6("Overall Summary"),
+        build_assessment_overview_table(session_dir, stage),
+    ])
+
+
+def build_raw_assessments_tab(session_dir: Path):
+    # Collect all *_raw_assessment.csv files (case-insensitive)
+    csv_files = list(session_dir.glob("*.csv"))
+    candidates = [p for p in csv_files if p.name.lower().endswith("_raw_assessment.csv")]
+    if not candidates:
+        body = html.Div("No raw assessment files found.")
+        return dcc.Tab(label="Raw Assessments", value="tab-raw", children=html.Div(body))
+
+    items = []
+    for path in sorted(candidates):
+        # Derive metric name from filename
+        metric = path.stem.replace("_raw_assessment", "").replace("_", " ").title()
+        header, data = _read_csv_rows(path)
+        if not header:
+            continue
+        thead = html.Thead(html.Tr([html.Th(h) for h in header]))
+        tbody = html.Tbody([html.Tr([html.Td(cell) for cell in row]) for row in data])
+        table = dbc.Table([thead, tbody], bordered=True, hover=True, size="sm")
+        items.append(
+            dbc.AccordionItem(table, title=metric)
+        )
+
+    if not items:
+        body = html.Div("No valid raw assessment tables found.")
+    else:
+        body = dbc.Accordion(items, always_open=False)
+
+    return dcc.Tab(label="Raw Assessments", value="tab-raw", children=html.Div(body))
+

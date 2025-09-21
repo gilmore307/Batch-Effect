@@ -60,7 +60,7 @@ def build_navbar(active_path: str) -> dbc.Navbar:
     is_home = active_path == "/"
     top_items.append(
         dbc.Button(
-            [html.I(className="bi bi-house me-1"), "Home"],
+            "Home",
             id=NAV_ID_MAP["/"],
             href="/",
             color="light",
@@ -73,21 +73,9 @@ def build_navbar(active_path: str) -> dbc.Navbar:
     # Help modal trigger
     top_items.append(
         dbc.Button(
-            [html.I(className="bi bi-question-circle me-1"), "Help"],
+            "Help",
             id="help-open",
             color="info",
-            outline=True,
-            className="me-2 mb-2",
-            size="sm",
-        )
-    )
-
-    # Logs modal trigger
-    top_items.append(
-        dbc.Button(
-            [html.I(className="bi bi-terminal me-1"), "Logs"],
-            id="log-open",
-            color="secondary",
             outline=True,
             className="me-2 mb-2",
             size="sm",
@@ -97,7 +85,7 @@ def build_navbar(active_path: str) -> dbc.Navbar:
     # External links
     top_items.append(
         dbc.Button(
-            [html.I(className="bi bi-github me-1"), "GitHub"],
+            "GitHub",
             color="secondary",
             outline=True,
             className="me-2 mb-2",
@@ -108,7 +96,7 @@ def build_navbar(active_path: str) -> dbc.Navbar:
     )
     top_items.append(
         dbc.Button(
-            [html.I(className="bi bi-bug me-1"), "Report issue"],
+            "Report issue",
             color="secondary",
             outline=True,
             className="me-2 mb-2",
@@ -122,7 +110,7 @@ def build_navbar(active_path: str) -> dbc.Navbar:
     top_items.append(html.Div(className="flex-grow-1"))
     top_items.append(
         dbc.Button(
-            [html.I(className="bi bi-download me-1"), "Download results"],
+            "Download results",
             id="download-results-btn",
             color="warning",
             className="ms-3 mb-2",
@@ -158,7 +146,7 @@ def build_navbar(active_path: str) -> dbc.Navbar:
             )
         )
         if path != last_path:
-            bottom_items.append(html.Span("->", className="mx-2 text-white fw-bold d-none d-md-inline"))
+            bottom_items.append(html.Span("鈫?, className="mx-2 text-white fw-bold d-none d-md-inline"))
 
     bottom_row = html.Div(bottom_items, className="d-flex align-items-center flex-wrap py-1")
 
@@ -167,7 +155,5 @@ def build_navbar(active_path: str) -> dbc.Navbar:
         color="primary",  # brighter background for better contrast
         dark=True,
         className="mb-4 be-navbar",
-        sticky="top",
     )
-
 

@@ -12,7 +12,7 @@ def welcome_layout(active_path: str):
             build_navbar(active_path),
             dbc.Container(
                 [
-                    html.H2("Welcome"),
+                    html.H2("Home"),
                     html.P("Placeholder for introduction content."),
                 ],
                 fluid=True,

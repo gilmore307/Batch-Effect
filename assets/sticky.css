@@ -1,0 +1,26 @@
+/* Sticky navbar already via dbc.Navbar(sticky="top"). Extra safety z-index */
+.be-navbar { z-index: 1030; }
+
+/* Keep inner sub-tabs (e.g., Aitchison/Bray/Assessment) visible while scrolling */
+.be-subtabs {
+  position: sticky;
+  top: 0; /* stays beneath sticky navbar in normal flow */
+  z-index: 1020;
+  background: var(--bs-body-bg, #ffffff);
+  padding-top: 0.25rem;
+  padding-bottom: 0.25rem;
+  width: 100%;
+  display: block;
+  /* subtle shadow to separate from content when stuck */
+  box-shadow: 0 2px 4px rgba(0,0,0,0.04);
+}
+
+/* Keep tab labels from shrinking and breaking lines */
+.be-subtabs .tab {
+  min-width: 140px;
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+/* Optional: when using vertical top-level Tabs, keep tab labels visible on narrow screens */
+.be-results-tabs .tab--selected { font-weight: 600; }

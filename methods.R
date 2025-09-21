@@ -38,7 +38,10 @@ suppressPackageStartupMessages({
 # ---------------------------
 # Source preprocess.r (helpers: say(), write_tss_clr(), detect_input_form(),
 # to_tss(), to_log(), to_clr(), to_counts(), check_table(), post_summary(), ...)
+# Ensure preprocess.R uses our intended output/matrix paths (avoid commandArgs hijack)
 # ---------------------------
+assign("PREPROC_OUTPUT_DIR", output_folder, envir = .GlobalEnv)
+assign("PREPROC_MATRIX_PATH", file.path(output_folder, "raw.csv"), envir = .GlobalEnv)
 source("preprocess.R")
 
 # If preprocess.r did not define the logger for some reason, provide a minimal one

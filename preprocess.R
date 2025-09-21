@@ -3,10 +3,19 @@
 # -----------------------------------------------------------------------------
 
 args <- commandArgs(trailingOnly = TRUE)
-output_folder <- if (length(args) >= 1) args[1] else "output/example"
+# Allow caller (e.g., methods.R) to predefine destinations to avoid mis-parsing
+if (exists("PREPROC_OUTPUT_DIR", inherits = TRUE)) {
+  output_folder <- get("PREPROC_OUTPUT_DIR", inherits = TRUE)
+} else {
+  output_folder <- if (length(args) >= 1) args[1] else "output/example"
+}
 if (!dir.exists(output_folder)) dir.create(output_folder, recursive = TRUE)
 
-matrix_path <- if (length(args) >= 2) args[2] else file.path(output_folder, "raw.csv")
+if (exists("PREPROC_MATRIX_PATH", inherits = TRUE)) {
+  matrix_path <- get("PREPROC_MATRIX_PATH", inherits = TRUE)
+} else {
+  matrix_path <- if (length(args) >= 2) args[2] else file.path(output_folder, "raw.csv")
+}
 if (!file.exists(matrix_path)) {
   alt <- file.path("assets", "raw.csv")
   if (file.exists(alt)) {

@@ -2,7 +2,7 @@
 # File: _6_correction.py
 # ===============================
 from typing import Sequence
-from dash import html
+from dash import dcc, html
 from dash.dependencies import Input, Output, State
 import dash
 import dash_bootstrap_components as dbc
@@ -23,7 +23,7 @@ def correction_layout(active_path: str):
                     [
                         dbc.Col(
                             [
-                                html.H2("Run batch correction"),
+                                html.H2("Batch Effect Correction"),
                                 html.P("Select the correction methods to run, then start the pipeline."),
                                 html.H4("Select correction methods"),
                                 dcc.Checklist(
@@ -55,6 +55,9 @@ def register_correction_callbacks(app):
 
     @app.callback(
         Output("correction-complete", "data"),
+        Output("runlog-path", "data", allow_duplicate=True),
+        Output("runlog-modal", "is_open", allow_duplicate=True),
+        Output("runlog-interval", "disabled", allow_duplicate=True),
         Input("run-correction", "n_clicks"),
         State("selected-methods", "data"),
         State("session-id", "data"),
@@ -64,13 +67,18 @@ def register_correction_callbacks(app):
         if not n_clicks:
             raise dash.exceptions.PreventUpdate
         if not session_id:
-            return False
+            return False, dash.no_update, dash.no_update, dash.no_update
         session_dir = get_session_dir(session_id)
         if not (session_dir / "raw.csv").exists() or not (session_dir / "metadata.csv").exists():
-            return False
+            return False, dash.no_update, dash.no_update, dash.no_update
         methods = methods or []
         if not methods:
-            return False
+            return False, dash.no_update, dash.no_update, dash.no_update
 
-        success, log = run_methods(session_dir, methods)
-        return bool(success)
+        log_path = session_dir / "correction.log"
+        try:
+            log_path.write_text("", encoding="utf-8")
+        except Exception:
+            pass
+        success, log = run_methods(session_dir, methods, log_path=log_path)
+        return bool(success), str(log_path), True, False
