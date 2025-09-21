@@ -43,6 +43,47 @@ post_summary <- function(M, name){
               mean(abs(rowMeans(M))), sum(!is.finite(M))))
 }
 
+# Ensure metadata$sample_id values are unique; rename duplicates with suffixes
+make_unique_sample_ids <- function(metadata, id_col = "sample_id", sep = "_") {
+  if (!is.data.frame(metadata) || !(id_col %in% colnames(metadata))) return(metadata)
+  ids <- as.character(metadata[[id_col]])
+  if (!length(ids)) return(metadata)
+  dup_mask <- duplicated(ids) | duplicated(ids, fromLast = TRUE)
+  if (any(dup_mask)) {
+    ids_new <- make.unique(ids, sep = sep)
+    changed <- sum(ids_new != ids)
+    # Log a concise summary of changes
+    ex <- unique(ids[dup_mask])
+    ex_str <- paste(utils::head(ex, 5), collapse=", ")
+    if (length(ex) > 5) ex_str <- paste0(ex_str, ", ...")
+    warn_step("Metadata IDs", sprintf("Detected %d duplicate sample_id(s): %s", length(ex), ex_str))
+    warn_step("Metadata IDs", sprintf("Renamed %d entries to ensure uniqueness (suffix %sN).", changed, sep))
+    metadata[[id_col]] <- ids_new
+  }
+  metadata
+}
+
+# --- If called as a script from Upload step, fix duplicates in-place ---
+try({
+  meta_path <- file.path(output_folder, "metadata.csv")
+  if (file.exists(meta_path)) {
+    t0 <- start_step("Check duplicate sample_id in metadata.csv")
+    meta <- utils::read.csv(meta_path, check.names = FALSE)
+    if ("sample_id" %in% colnames(meta)) {
+      before <- as.character(meta$sample_id)
+      meta2 <- make_unique_sample_ids(meta, id_col = "sample_id", sep = "_")
+      if (!identical(before, as.character(meta2$sample_id))) {
+        utils::write.csv(meta2, meta_path, row.names = FALSE)
+        ok_step("Updated metadata.csv (unique sample_id)", t0)
+      } else {
+        ok_step("No duplicate sample_id found", t0)
+      }
+    } else {
+      warn_step("metadata.csv", "No 'sample_id' column — skipping dedup.")
+    }
+  }
+}, silent = TRUE)
+
 check_table <- function(x, name = "table", allow_negative = TRUE) {
   if (!is.data.frame(x) && !is.matrix(x)) fail_step(name, "Not a data.frame/matrix.")
   DF <- as.data.frame(x, stringsAsFactors = FALSE)
@@ -135,6 +176,24 @@ detect_input_form <- function(M) {
   "log"
 }
 
+to_counts <- function(M, from = NULL, scale = 1e5) {
+  M <- as.matrix(M)
+  if (is.null(from)) from <- detect_input_form(M)
+  
+  if (from == "counts") {
+    M[!is.finite(M)] <- 0
+    M[M < 0] <- 0
+    C <- round(M)
+    dimnames(C) <- dimnames(M)
+    return(C)
+  }
+  
+  P <- to_tss(M, from = from)
+  C <- round(P * scale)
+  dimnames(C) <- dimnames(M)
+  return(C)
+}
+
 to_tss <- function(M, from = NULL) {
   M <- as.matrix(M)
   if (is.null(from)) from <- detect_input_form(M)
@@ -167,6 +226,24 @@ to_tss <- function(M, from = NULL) {
     return(P)
   }
   stop("to_tss: unknown 'from'=", from)
+}
+
+to_log <- function(M, from = NULL, pseudo_min = 1e-6) {
+  M <- as.matrix(M)
+  if (is.null(from)) from <- detect_input_form(M)
+  
+  if (from == "log") return(M)
+  
+  if (from %in% c("tss","positive","counts", "clr")) {
+    P <- to_tss(M, from = from)
+    nz <- P[P > 0]
+    if (!length(nz)) stop("to_log: no positive entries")
+    eps <- max(min(nz) * 0.65, pseudo_min)
+    P[P == 0] <- eps
+    return(log(P))
+  }
+  
+  stop("to_log: unknown 'from'=", from)
 }
 
 to_clr <- function(M, from = NULL, pseudo_min = 1e-6) {

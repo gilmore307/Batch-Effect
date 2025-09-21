@@ -1,13 +1,16 @@
 # ---------------------------
 # Handle Arguments
 # ---------------------------
-# All Methods: FSQN, QN, BMC, limma, ConQuR, PLSDA, ComBat, MMUPHin, RUV,
-#              MetaDICT, SVD, PN, FAbatch, ComBatSeq, DEBIAS
+# All Methods: FSQN, QN, BMC, limma, ConQuR, PLSDA, ComBat, MMUPHin, RUV, MetaDICT, SVD, PN, FAbatch, ComBatSeq, DEBIAS
 args <- commandArgs(trailingOnly = TRUE)
 if (length(args) < 1) {
   args <- c("FSQN, QN, BMC, limma, ConQuR, PLSDA, ComBat, MMUPHin, RUV, MetaDICT, SVD, PN, FAbatch, ComBatSeq, DEBIAS", "output/example")
 }
-method_list   <- unlist(strsplit(args[1], ","))
+
+# Split and trim whitespace so names match exactly
+method_list   <- trimws(unlist(strsplit(args[1], ",")))
+# Drop empty tokens
+method_list   <- method_list[nzchar(method_list)]
 output_folder <- args[2]
 if (!dir.exists(output_folder)) dir.create(output_folder, recursive = TRUE)
 
@@ -140,6 +143,9 @@ say("ℹ️ Detected input form: ", input_form)
 
 if (!("sample_id" %in% colnames(metadata)))
   fail_step("Alignment", "'sample_id' column not found in metadata.")
+
+# Make duplicate sample IDs unique (append _1, _2, ...)
+metadata <- make_unique_sample_ids(metadata, id_col = "sample_id", sep = "_")
 if (nrow(uploaded_mat) != nrow(metadata))
   fail_step("Alignment", "Row count mismatch between matrix and metadata.")
 rownames(uploaded_mat) <- metadata$sample_id

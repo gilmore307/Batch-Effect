@@ -53,9 +53,9 @@ metadata <- data.frame(
 )
 
 # -- Write EXACTLY two files
-write.csv(as.data.frame(ad.clr), "abundance.csv", quote = FALSE)
+write.csv(as.data.frame(ad.clr), "raw.csv", quote = FALSE)
 write.csv(rd, "metadata.csv", row.names = FALSE, quote = FALSE)
 
-cat("Wrote files:\n  - abundance.csv (", nrow(ad.clr), " samples x ",
+cat("Wrote files:\n  - raw.csv (", nrow(ad.clr), " samples x ",
     ncol(ad.clr), " OTUs)\n  - metadata.csv (", nrow(metadata),
     " samples x ", ncol(metadata), " columns)\n", sep = "")
