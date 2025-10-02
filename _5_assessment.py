@@ -23,6 +23,29 @@ from _2_utils import (
 
 
 def assessment_layout(active_path: str, stage: str):
+    # Unified tab styles (keep size and position consistent)
+    TOP_TAB_STYLE = {
+        "borderBottom": "1px solid #d6d6d6",
+        "padding": "6px",
+        "fontWeight": "bold",
+        "width": "250px",
+        "height": "80px",
+        "display": "flex",
+        "alignItems": "center",
+        "justifyContent": "center",
+    }
+    TOP_TAB_SELECTED_STYLE = {
+        "borderTop": "1px solid #d6d6d6",
+        "borderBottom": "1px solid #d6d6d6",
+        "backgroundColor": "#f8f9fa",
+        "color": "#0d6efd",
+        "padding": "6px",
+        "width": "250px",
+        "height": "80px",
+        "display": "flex",
+        "alignItems": "center",
+        "justifyContent": "center",
+    }
     header = "Pre-correction Assessment" if stage == "pre" else "Post-correction Assessment"
     gallery_id = "pre-assessment-gallery" if stage == "pre" else "post-assessment-gallery"
 
@@ -60,6 +83,8 @@ def assessment_layout(active_path: str, stage: str):
             dcc.Tab(
                 label=title,
                 value=f"tab-{key}",
+                style=TOP_TAB_STYLE,
+                selected_style=TOP_TAB_SELECTED_STYLE,
                 children=html.Div([
                     dbc.Button("Run", id=run_id, size="sm", color="primary", className="mb-2"),
                     dcc.Loading(html.Div(id=content_id, children=placeholder), type="default"),
@@ -67,14 +92,17 @@ def assessment_layout(active_path: str, stage: str):
             )
         )
 
-    # Overall tab at the end (auto-updates after any run)
-    tab_items.append(
-        dcc.Tab(
-            label="Overall",
-            value="tab-overall",
-            children=html.Div(id=f"{stage}-overall-content", children=html.Div("No results yet.")),
+    # Overall tab only for post stage
+    if stage == "post":
+        tab_items.append(
+            dcc.Tab(
+                label="Overall",
+                value="tab-overall",
+                style=TOP_TAB_STYLE,
+                selected_style=TOP_TAB_SELECTED_STYLE,
+                children=html.Div(id=f"{stage}-overall-content", children=html.Div("No results yet.")),
+            )
         )
-    )
 
     tabs = dcc.Tabs(children=tab_items, value=(tab_items[0].value if tab_items else None), vertical=True, className="be-results-tabs")
 
@@ -125,12 +153,15 @@ def register_pre_post_callbacks(app):
             outputs.append(Output("pre-started", "data", allow_duplicate=True))
         if stage == "post":
             outputs.append(Output("post-complete", "data", allow_duplicate=True))
+        # Common runlog outputs
         outputs.extend([
             Output("runlog-path", "data", allow_duplicate=True),
             Output("runlog-modal", "is_open", allow_duplicate=True),
             Output("runlog-interval", "disabled", allow_duplicate=True),
-            Output(f"{stage}-overall-content", "children", allow_duplicate=True),
         ])
+        # Only post stage updates an Overall tab
+        if stage == "post":
+            outputs.append(Output(f"{stage}-overall-content", "children", allow_duplicate=True))
 
         @app.callback(*outputs, Input(run_id, "n_clicks"), State("session-id", "data"), prevent_initial_call=True)
         def _run_one(n_clicks: int, session_id: str, _stage=stage, _key=key, _script=script_name):
@@ -155,10 +186,12 @@ def register_pre_post_callbacks(app):
                 pass
             success, _ = run_r_scripts((_script,), session_dir, log_path=log_path)
             content = render_group_tabset(session_dir, _stage, _key)
-            overall = build_overall_div(session_dir, _stage)
             if _stage == "pre":
-                return content, True, str(log_path), True, False, overall
+                # pre: no Overall tab to update
+                return content, True, str(log_path), True, False
             else:
+                # post: update Overall
+                overall = build_overall_div(session_dir, _stage)
                 return content, True, str(log_path), True, False, overall
 
     # Register all group callbacks

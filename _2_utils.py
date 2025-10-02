@@ -406,6 +406,60 @@ def render_assessment_tabs(session_dir: Path, figures: Sequence[FigureSpec], sta
     Single-geometry plots also include the third sub-tab accordingly.
     """
 
+    # Consistent styles for top-level and inner tabs (keeps size stable)
+    TOP_TAB_STYLE = {
+        "borderBottom": "1px solid #d6d6d6",
+        "padding": "6px",
+        "fontWeight": "bold",
+        "width": "250px",
+        "height": "60px",
+        "display": "flex",
+        "alignItems": "center",
+        "justifyContent": "center",
+    }
+    TOP_TAB_SELECTED_STYLE = {
+        "borderTop": "1px solid #d6d6d6",
+        "borderBottom": "1px solid #d6d6d6",
+        "backgroundColor": "#f8f9fa",
+        "color": "#0d6efd",
+        "padding": "6px",
+        "width": "250px",
+        "height": "60px",
+        "display": "flex",
+        "alignItems": "center",
+        "justifyContent": "center",
+    }
+    SUBTAB_STYLE_BASE = {
+        "borderBottom": "1px solid #d6d6d6",
+        "padding": "6px",
+        "fontWeight": "bold",
+        "height": "60px",
+        "display": "inline-flex",
+        "alignItems": "center",
+        "justifyContent": "center",
+        # Fixed width to keep constant size, no shrinking
+        "width": "250px",
+        "minWidth": "250px",
+        "flex": "0 0 250px",
+        "boxSizing": "border-box",
+    }
+    SUBTAB_SELECTED_STYLE_BASE = {
+        "borderTop": "1px solid #d6d6d6",
+        "borderBottom": "1px solid #d6d6d6",
+        "backgroundColor": "#f8f9fa",
+        "color": "#0d6efd",
+        "padding": "6px",
+        "height": "60px",
+        "display": "inline-flex",
+        "alignItems": "center",
+        "justifyContent": "center",
+        # Fixed width to keep constant size, no shrinking
+        "width": "250px",
+        "minWidth": "250px",
+        "flex": "0 0 250px",
+        "boxSizing": "border-box",
+    }
+
     def content_for_image(filename: str) -> html.Div:
         img_path = session_dir / filename
         if not img_path.exists():
@@ -467,10 +521,12 @@ def render_assessment_tabs(session_dir: Path, figures: Sequence[FigureSpec], sta
         # choose a representative filename for assessment lookup
         rep = g["ait"] or g["bray"] or g["single"]
 
+        # Build sub-tab definitions first so we can size them evenly later
+        sub_defs = []
         if g["ait"]:
-            sub_tabs.append(dcc.Tab(label="Aitchison (CLR)", value=f"{key}-ait", children=content_for_image(g["ait"])) )
+            sub_defs.append(("Aitchison (CLR)", f"{key}-ait", content_for_image(g["ait"])) )
         if g["bray"]:
-            sub_tabs.append(dcc.Tab(label="Bray-Curtis (TSS)", value=f"{key}-bray", children=content_for_image(g["bray"])) )
+            sub_defs.append(("Bray-Curtis (TSS)", f"{key}-bray", content_for_image(g["bray"])) )
 
         # Third sub-tab: Assessment (pre) or Rank (post)
         third_label = "Assessment" if stage == "pre" else "Rank"
@@ -497,13 +553,34 @@ def render_assessment_tabs(session_dir: Path, figures: Sequence[FigureSpec], sta
                         break
         if third_content is None:
             third_content = html.Div("No table found.")
-        sub_tabs.append(dcc.Tab(label=third_label, value=f"{key}-third", children=html.Div(third_content)))
+        sub_defs.append((third_label, f"{key}-third", html.Div(third_content)))
+
+        # Create sub-tabs with fixed width; allow horizontal scrolling in container
+        SUBTAB_STYLE = dict(SUBTAB_STYLE_BASE)
+        SUBTAB_SELECTED_STYLE = dict(SUBTAB_SELECTED_STYLE_BASE)
+        sub_tabs = [
+            dcc.Tab(label=lbl, value=val, children=child, style=SUBTAB_STYLE, selected_style=SUBTAB_SELECTED_STYLE)
+            for (lbl, val, child) in sub_defs
+        ]
 
         inner_default = sub_tabs[0].value if sub_tabs else None
-        inner = dcc.Tabs(className="be-subtabs", children=sub_tabs, value=inner_default)
+        inner = dcc.Tabs(
+            className="be-subtabs",
+            children=sub_tabs,
+            value=inner_default,
+            vertical=False,
+            mobile_breakpoint=0,
+            # Keep in one row and allow horizontal scroll
+            style={
+                "width": "100%",
+                "display": "block",
+                "overflowX": "auto",
+                "whiteSpace": "nowrap",
+            },
+        )
 
         top_value = f"tab-{key}"
-        tabs.append(dcc.Tab(label=title, value=top_value, children=html.Div(inner)))
+        tabs.append(dcc.Tab(label=title, value=top_value, children=html.Div(inner), style=TOP_TAB_STYLE, selected_style=TOP_TAB_SELECTED_STYLE))
         if first_value is None:
             first_value = top_value
 
@@ -531,6 +608,38 @@ def render_group_tabset(session_dir: Path, stage: str, key: str):
                   'pvca','alignment','auc','lisi','ebm','silhouette'
     """
     figures = PRE_FIGURES if stage == "pre" else POST_FIGURES
+
+    # Keep sub-tab size consistent using inline styles
+    SUBTAB_STYLE_BASE = {
+        "borderBottom": "1px solid #d6d6d6",
+        "padding": "6px",
+        "fontWeight": "bold",
+        "height": "80px",
+        "display": "inline-flex",
+        "alignItems": "center",
+        "justifyContent": "center",
+        # Fixed width to keep constant size, no shrinking
+        "width": "250px",
+        "minWidth": "250px",
+        "flex": "0 0 250px",
+        "boxSizing": "border-box",
+    }
+    SUBTAB_SELECTED_STYLE_BASE = {
+        "borderTop": "1px solid #d6d6d6",
+        "borderBottom": "1px solid #d6d6d6",
+        "backgroundColor": "#f8f9fa",
+        "color": "#0d6efd",
+        "padding": "6px",
+        "height": "80px",
+        "display": "inline-flex",
+        "alignItems": "center",
+        "justifyContent": "center",
+        # Fixed width to keep constant size, no shrinking
+        "width": "250px",
+        "minWidth": "250px",
+        "flex": "0 0 250px",
+        "boxSizing": "border-box",
+    }
 
     def content_for_image(filename: str) -> html.Div:
         img_path = session_dir / filename
@@ -593,12 +702,13 @@ def render_group_tabset(session_dir: Path, stage: str, key: str):
             g["single"] = spec.filename; g["title"] = "Silhouette score"
 
     sub_tabs = []
+    sub_defs = []
     if g["ait"]:
-        sub_tabs.append(dcc.Tab(label="Aitchison (CLR)", value=f"{key}-ait", children=content_for_image(g["ait"])) )
+        sub_defs.append(("Aitchison (CLR)", f"{key}-ait", content_for_image(g["ait"])) )
     if g["bray"]:
-        sub_tabs.append(dcc.Tab(label="Bray-Curtis (TSS)", value=f"{key}-bray", children=content_for_image(g["bray"])) )
+        sub_defs.append(("Bray-Curtis (TSS)", f"{key}-bray", content_for_image(g["bray"])) )
     if g["single"] and not (g["ait"] or g["bray"]):
-        sub_tabs.append(dcc.Tab(label="Plot", value=f"{key}-plot", children=content_for_image(g["single"])) )
+        sub_defs.append(("Plot", f"{key}-plot", content_for_image(g["single"])) )
 
     rep = g["ait"] or g["bray"] or g["single"]
     third_label = "Assessment" if stage == "pre" else "Rank"
@@ -624,9 +734,28 @@ def render_group_tabset(session_dir: Path, stage: str, key: str):
                         third_content = dbc.Table([thead, tbody], bordered=True, hover=True, size="sm")
                     break
     if third_content is not None:
-        sub_tabs.append(dcc.Tab(label=third_label, value=f"{key}-third", children=html.Div(third_content)))
+        sub_defs.append((third_label, f"{key}-third", html.Div(third_content)))
 
-    return dcc.Tabs(children=sub_tabs, value=sub_tabs[0].value if sub_tabs else None, className="be-subtabs", style={"width": "100%", "display": "block"})
+    SUBTAB_STYLE = dict(SUBTAB_STYLE_BASE)
+    SUBTAB_SELECTED_STYLE = dict(SUBTAB_SELECTED_STYLE_BASE)
+    sub_tabs = [
+        dcc.Tab(label=lbl, value=val, children=child, style=SUBTAB_STYLE, selected_style=SUBTAB_SELECTED_STYLE)
+        for (lbl, val, child) in sub_defs
+    ]
+
+    return dcc.Tabs(
+        children=sub_tabs,
+        value=sub_tabs[0].value if sub_tabs else None,
+        className="be-subtabs",
+        style={
+            "width": "100%",
+            "display": "block",
+            "overflowX": "auto",
+            "whiteSpace": "nowrap",
+        },
+        vertical=False,
+        mobile_breakpoint=0,
+    )
 
 
 def aggregate_rankings(session_dir: Path) -> Tuple[List[str], List[Dict[str, str]]]:
